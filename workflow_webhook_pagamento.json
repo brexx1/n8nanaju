@@ -1,0 +1,178 @@
+{
+  "name": "Bot Ana Julia - Webhook Pagamento",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-pagamento-anajulia",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "webhook-pagamento-ana"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// PROCESSAR NOTIFICAÇÃO DE PAGAMENTO\n// ============================================\n\nconst payload = $json;\n\nconsole.log('📥 Webhook recebido:', JSON.stringify(payload, null, 2));\n\n// Extrair dados do pagamento (ajuste conforme API do Syncpay)\nconst chatId = payload.customer_id || payload.external_reference || payload.metadata?.chat_id;\nconst status = payload.status || payload.payment_status;\nconst valor = payload.value || payload.amount;\nconst transactionId = payload.transaction_id || payload.id;\n\nif (!chatId) {\n  console.error('❌ Erro: customer_id não encontrado no webhook');\n  return [{\n    json: {\n      success: false,\n      error: 'customer_id missing'\n    }\n  }];\n}\n\nconst isPago = (\n  status === 'PAID' ||\n  status === 'approved' ||\n  status === 'paid' ||\n  status === 'confirmed'\n);\n\nconsole.log(`💰 Pagamento - Chat: ${chatId}, Status: ${status}, Valor: ${valor}, Pago: ${isPago}`);\n\nreturn [{\n  json: {\n    chatId: chatId.toString(),\n    status,\n    isPago,\n    valor,\n    transactionId,\n    rawPayload: payload\n  }\n}];"
+      },
+      "id": "processar-webhook-002",
+      "name": "1. Processar Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isPago }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-pago-003",
+      "name": "2. Pagamento Aprovado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET payment_status = 'PAID', status = 'PAGO', aguardando_pagamento = false, pago_em = NOW() WHERE chat_id = $1 RETURNING *",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "atualizar-lead-004",
+      "name": "3. Atualizar Lead PAGO",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [850, 200],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "text": "amor recebi seu pix 💕💕💕 agora vc é meu viu 😈\n\nolha o conteúdo exclusivo que preparei só pra vc 🔥\n\nhttps://t.me/+COLOQUE_SEU_LINK_DO_CANAL_VIP_AQUI\n\nqualquer coisa me chama lá que eu te respondo tá? ❤️",
+        "additionalFields": {}
+      },
+      "id": "enviar-link-vip-005",
+      "name": "4. Enviar Link VIP",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1050, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "text": "🎉🎉🎉\n\nobrigada meu amor pela confiança\n\nte espero lá no VIP para fazer você gozar muito ðŸ'¦ðŸ"¥\n\nbeijooos ❤️",
+        "additionalFields": {}
+      },
+      "id": "enviar-agradecimento-006",
+      "name": "5. Enviar Agradecimento",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1250, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Log de sucesso\nconsole.log(`✅ Pagamento processado com sucesso para ${$json.chatId}`);\n\nreturn [{\n  json: {\n    success: true,\n    message: 'Pagamento processado',\n    chatId: $json.chatId\n  }\n}];"
+      },
+      "id": "response-sucesso-007",
+      "name": "6. Response Sucesso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET payment_status = $1 WHERE chat_id = $2",
+        "queryParameters": "={{ { \"values\": [$json.status, $json.chatId] } }}"
+      },
+      "id": "atualizar-status-008",
+      "name": "7. Atualizar Status Pendente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [850, 400],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log(`⏳ Pagamento pendente para ${$json.chatId} - Status: ${$json.status}`);\n\nreturn [{\n  json: {\n    success: true,\n    message: 'Status atualizado',\n    status: $json.status\n  }\n}];"
+      },
+      "id": "response-pendente-009",
+      "name": "8. Response Pendente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "1. Processar Webhook", "type": "main", "index": 0 }]]
+    },
+    "1. Processar Webhook": {
+      "main": [[{ "node": "2. Pagamento Aprovado?", "type": "main", "index": 0 }]]
+    },
+    "2. Pagamento Aprovado?": {
+      "main": [
+        [{ "node": "3. Atualizar Lead PAGO", "type": "main", "index": 0 }],
+        [{ "node": "7. Atualizar Status Pendente", "type": "main", "index": 0 }]
+      ]
+    },
+    "3. Atualizar Lead PAGO": {
+      "main": [[{ "node": "4. Enviar Link VIP", "type": "main", "index": 0 }]]
+    },
+    "4. Enviar Link VIP": {
+      "main": [[{ "node": "5. Enviar Agradecimento", "type": "main", "index": 0 }]]
+    },
+    "5. Enviar Agradecimento": {
+      "main": [[{ "node": "6. Response Sucesso", "type": "main", "index": 0 }]]
+    },
+    "7. Atualizar Status Pendente": {
+      "main": [[{ "node": "8. Response Pendente", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-28T00:00:00.000Z",
+  "versionId": "1"
+}

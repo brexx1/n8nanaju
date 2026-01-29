@@ -1,0 +1,873 @@
+{
+  "name": "Bot Ana Julia - Workflow Principal",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"]
+      },
+      "id": "telegram-trigger-001",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "ana-julia-bot-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// EXTRAÇÃO DE DADOS DA MENSAGEM DO TELEGRAM\n// ============================================\n\nconst items = $input.all();\nconst message = items[0].json.message;\n\nif (!message) {\n  console.log('⚠️ Mensagem vazia recebida');\n  return [];\n}\n\nconst chatId = message.chat.id.toString();\nconst userName = message.from.first_name || 'amor';\nconst texto = (message.text || '').trim();\nconst hasPhoto = !!message.photo;\nconst hasVideo = !!message.video || !!message.video_note;\nconst hasAudio = !!message.voice || !!message.audio;\n\nlet tipoMensagem = 'TEXTO';\nif (hasPhoto) tipoMensagem = 'FOTO_LEAD';\nelse if (hasVideo) tipoMensagem = 'VIDEO_LEAD';\nelse if (hasAudio) tipoMensagem = 'AUDIO_LEAD';\n\nconst isStart = texto.toLowerCase() === '/start';\nconst timestampAtual = Date.now();\n\n// Detectar mensagens de bot\nconst textoLower = texto.toLowerCase();\nconst isBotMessage = (\n  textoLower.includes('bot') ||\n  textoLower.includes('fake') ||\n  textoLower.includes('robo') ||\n  textoLower.includes('automático')\n);\n\nconsole.log(`📨 Mensagem recebida de ${chatId}: \"${texto}\"`);\n\nreturn [{\n  json: {\n    chatId,\n    userName,\n    texto,\n    tipoMensagem,\n    isStart,\n    isBotMessage,\n    hasPhoto,\n    hasVideo,\n    hasAudio,\n    timestampAtual,\n    messageId: message.message_id\n  }\n}];"
+      },
+      "id": "extrair-mensagem-002",
+      "name": "1. Extrair Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM leads WHERE chat_id = $1 LIMIT 1",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "buscar-lead-003",
+      "name": "2. Buscar Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// PREPARAR DADOS DO LEAD (NOVO OU EXISTENTE)\n// ============================================\n\nconst input = $input.first().json;\nconst leadResults = $('2. Buscar Lead').all();\n\nlet leadData = null;\nif (leadResults && leadResults.length > 0) {\n  const result = leadResults[0].json;\n  if (Array.isArray(result) && result.length > 0) {\n    leadData = result[0];\n  } else if (result && result.chat_id) {\n    leadData = result;\n  }\n}\n\nlet lead;\nlet isNewLead = false;\n\nif (leadData && leadData.chat_id) {\n  // Lead existente\n  lead = {\n    ...leadData,\n    historico: Array.isArray(leadData.historico) ? leadData.historico : []\n  };\n  console.log(`✅ Lead existente encontrado: ${lead.chat_id} - Etapa ${lead.etapa}`);\n} else {\n  // Novo lead\n  isNewLead = true;\n  lead = {\n    chat_id: input.chatId,\n    nome: input.userName,\n    etapa: 0,\n    sub_etapa: 0,\n    mensagens_na_etapa: 0,\n    respostas_bot_na_etapa: 0,\n    is_sending_sequence: false,\n    processando: false,\n    aguardando_pagamento: false,\n    status: 'ATIVO',\n    payment_status: null,\n    historico: [],\n    cutucadas_enviadas: 0,\n    criado_em: new Date().toISOString(),\n    ultima_interacao: new Date().toISOString(),\n    ultima_mensagem_lead: new Date().toISOString(),\n    entrou_etapa_7_em: null\n  };\n  console.log(`🆕 Novo lead criado: ${lead.chat_id}`);\n}\n\n// Adicionar mensagem ao histórico se houver texto\nif (input.texto) {\n  lead.historico.push({\n    role: 'user',\n    content: input.texto,\n    ts: new Date().toISOString()\n  });\n  \n  // Incrementar contador de mensagens\n  lead.mensagens_na_etapa = (lead.mensagens_na_etapa || 0) + 1;\n  \n  // Limitar histórico a 20 mensagens\n  if (lead.historico.length > 20) {\n    lead.historico = lead.historico.slice(-20);\n  }\n}\n\n// Atualizar timestamps\nlead.ultima_interacao = new Date().toISOString();\nlead.ultima_mensagem_lead = new Date().toISOString();\n\nreturn [{\n  json: {\n    ...input,\n    lead,\n    isNewLead\n  }\n}];"
+      },
+      "id": "preparar-lead-004",
+      "name": "3. Preparar Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// SISTEMA DE LOCK - PREVINE PROCESSAMENTO DUPLICADO\n// ============================================\n\nconst lead = $json.lead;\nconst agora = Date.now();\n\n// 1. Verificar se está enviando sequência\nif (lead.is_sending_sequence === true) {\n  console.log(`⏸️ Lead ${lead.chat_id} recebendo sequência. Mensagem ignorada.`);\n  return [];\n}\n\n// 2. Verificar se já está processando\nif (lead.processando === true) {\n  const processandoDesde = new Date(lead.processando_desde || new Date()).getTime();\n  const tempoProcessando = agora - processandoDesde;\n  \n  // Se está processando há menos de 5 segundos, IGNORA\n  if (tempoProcessando < 5000) {\n    console.log(`⏸️ Lead ${lead.chat_id} já em processamento há ${Math.round(tempoProcessando/1000)}s. Ignorando.`);\n    return [];\n  } else {\n    console.log(`⚠️ Lead ${lead.chat_id} travado há ${Math.round(tempoProcessando/1000)}s. Liberando lock.`);\n  }\n}\n\n// 3. Adquirir lock\nlead.processando = true;\nlead.processando_desde = new Date().toISOString();\n\nconsole.log(`🔒 Lock adquirido para lead ${lead.chat_id}`);\n\nreturn [{ json: $json }];"
+      },
+      "id": "check-lock-005",
+      "name": "4. Check Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (chat_id, nome, etapa, sub_etapa, mensagens_na_etapa, respostas_bot_na_etapa, is_sending_sequence, processando, processando_desde, aguardando_pagamento, status, payment_status, historico, cutucadas_enviadas, criado_em, ultima_interacao, ultima_mensagem_lead, entrou_etapa_7_em)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)\nON CONFLICT (chat_id) DO UPDATE SET\n  nome = EXCLUDED.nome,\n  etapa = EXCLUDED.etapa,\n  sub_etapa = EXCLUDED.sub_etapa,\n  mensagens_na_etapa = EXCLUDED.mensagens_na_etapa,\n  respostas_bot_na_etapa = EXCLUDED.respostas_bot_na_etapa,\n  is_sending_sequence = EXCLUDED.is_sending_sequence,\n  processando = EXCLUDED.processando,\n  processando_desde = EXCLUDED.processando_desde,\n  aguardando_pagamento = EXCLUDED.aguardando_pagamento,\n  status = EXCLUDED.status,\n  payment_status = EXCLUDED.payment_status,\n  historico = EXCLUDED.historico,\n  cutucadas_enviadas = EXCLUDED.cutucadas_enviadas,\n  ultima_interacao = EXCLUDED.ultima_interacao,\n  ultima_mensagem_lead = EXCLUDED.ultima_mensagem_lead,\n  entrou_etapa_7_em = EXCLUDED.entrou_etapa_7_em",
+        "queryParameters": "={{ {\n  \"values\": [\n    $json.lead.chat_id,\n    $json.lead.nome,\n    $json.lead.etapa,\n    $json.lead.sub_etapa,\n    $json.lead.mensagens_na_etapa,\n    $json.lead.respostas_bot_na_etapa,\n    $json.lead.is_sending_sequence,\n    $json.lead.processando,\n    $json.lead.processando_desde,\n    $json.lead.aguardando_pagamento,\n    $json.lead.status,\n    $json.lead.payment_status,\n    JSON.stringify($json.lead.historico),\n    $json.lead.cutucadas_enviadas,\n    $json.lead.criado_em,\n    $json.lead.ultima_interacao,\n    $json.lead.ultima_mensagem_lead,\n    $json.lead.entrou_etapa_7_em\n  ]\n} }}"
+      },
+      "id": "atualizar-lock-on-006",
+      "name": "5. Atualizar Lock ON",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isStart }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-start-007",
+      "name": "6. É /start?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Reset completo para /start\nconst input = $json;\n\ninput.lead.etapa = 0;\ninput.lead.sub_etapa = 0;\ninput.lead.mensagens_na_etapa = 0;\ninput.lead.respostas_bot_na_etapa = 0;\ninput.lead.is_sending_sequence = false;\ninput.lead.aguardando_pagamento = false;\ninput.lead.cutucadas_enviadas = 0;\n\nconsole.log(`🔄 Lead ${input.lead.chat_id} resetado para Etapa 0`);\n\nreturn [{ json: input }];"
+      },
+      "id": "reset-start-008",
+      "name": "7. Reset para Etapa 0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isBotMessage }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-bot-009",
+      "name": "8. É msg anti-bot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resposta anti-bot\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nreturn [{\n  json: {\n    ...$json,\n    sequencia: [\n      {\n        tipo: 'audio',\n        url: `${baseUrl}/audio%20confirmando%20que%20%C3%A9%20humana.ogg`,\n        delay: 3000\n      },\n      {\n        tipo: 'texto',\n        mensagem: 'kkkkk eu sou de verdade amor, só quero conversar com você 😊',\n        delay: 4000\n      }\n    ],\n    enviarSequencia: true,\n    pularGroq: true\n  }\n}];"
+      },
+      "id": "antibot-response-010",
+      "name": "9. Resposta Anti-Bot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.lead.etapa }}",
+        "rules": {
+          "rules": [
+            { "outputKey": 0 },
+            { "outputKey": 1 },
+            { "outputKey": 2 },
+            { "outputKey": 3 },
+            { "outputKey": 4 },
+            { "outputKey": 5 },
+            { "outputKey": 6 },
+            { "outputKey": 7 },
+            { "outputKey": 8 }
+          ]
+        }
+      },
+      "id": "switch-etapa-011",
+      "name": "10. Switch Etapa",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1850, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 0 - BOAS-VINDAS\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\n// Primeira interação: enviar sequência de boas-vindas\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'texto',\n          mensagem: 'oi meu amor?',\n          delay: 3000\n        },\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%20numero%201%20anajulia%20boas%20vindas.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%201%20sou%20a%20aninha%20%20td%20bem%20com%20vc.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'tô num tédio amor kkkk queria conversar com alguém, sabe fazer alguma safeza 😈🙄',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Demais interações: chamar Groq\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia, uma atriz pornô de 23 anos, brasileira. Tom: Amigável, leve, divertido. Demonstre interesse sexual sutil mas não seja explícita ainda. Use linguagem brasileira informal (\"vc\", \"kkkk\"). Mensagens curtas (1-3 linhas). SEMPRE faça uma pergunta para engajar.'\n  }\n}];"
+      },
+      "id": "etapa-0-012",
+      "name": "ETAPA 0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 1 - FLERTE\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%20numero%202%20salvar%20contato.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'vou salvar seu contatinho aqui amor',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'depois te passo meu contatinho lá no whatsapp tá bom?',\n          delay: 5000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'to sozinha em casa agora',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'vc curte falar sobre putaria ?',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Provocante mas não explícita ainda. Crie tensão sexual gradualmente. Faça perguntas mais íntimas (\"gosta de mulher assim?\", \"curte o que?\"). Seja flertadora e curiosa.'\n  }\n}];"
+      },
+      "id": "etapa-1-013",
+      "name": "ETAPA 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 2 - PROVOCAÇÃO\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%202%20nossa%20amor%20t%C3%B4%20me%20sentindo%20t%C3%A3o%20linda.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'nossa amor tô me sentindo tão linda',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'gostou do videozinho??',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Safada, direta, provocante. Fale abertamente sobre tesão e desejo. Mencione seus seios, corpo. Diga que gosta de se exibir. Crie urgência. Seja explícita mas ainda conversacional.'\n  }\n}];"
+      },
+      "id": "etapa-2-014",
+      "name": "ETAPA 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 3 - DESAFIO DO SUTIÃ\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\n// Primeira mensagem: desafio\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'texto',\n          mensagem: 'amor kkkk tive uma ideia',\n          delay: 4000\n        },\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%203%20desafio%20numero1.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'vai me fala rs qual é a cor do sutiã que estou usando agr? estou facilitando pra você kkk',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false,\n      aguardarResposta: true\n    }\n  }];\n}\n\n// Segunda mensagem: recompensa (3 vídeos)\nif (input.lead.mensagens_na_etapa === 2) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'texto',\n          mensagem: 'é rosaa amorzinho',\n          delay: 3000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'vou ser boazinha e mandar o video dos meus peitinhos',\n          delay: 5000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%203%20mostrando%20suti%C3%A3.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%204%20apertando%20os%20seios.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%205%20hahahaah%20agora%20eu%20fiquei%20ati%C3%A7ada.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'hahahaah agora eu fiquei atiçada',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'quero conversar mais com vc',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'pronto pro novo desafio amor?',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{ json: { ...input, enviarSequencia: false, chamarGroqDepois: false } }];"
+      },
+      "id": "etapa-3-015",
+      "name": "ETAPA 3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 600]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 4 - AQUECIMENTO 1\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nconst msgs = input.lead.mensagens_na_etapa;\n\n// Primeira interação: desafio 2\nif (msgs <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%205%20desafio%20n%C3%BAmero%202%2C%20se%20acertar%20fico%20s%C3%B3%20de%20calcinha%20e%20suti%C3%A3%20pra%20voc%C3%AA.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'agora se você acertar fico só de calcinha e sutiã pra você. tenta adivinhar 😈',\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'o que acha???',\n          delay: 4000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Segunda interação: vídeos sensuais\nif (msgs === 2) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%206%20sensualizando%20para%20o%20lead.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%207%20queria%20voc%C3%AA%20aqui%20comigo.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'queria você aqui comigo 😇',\n          delay: 5000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%208%20o%20que%20faria%20comigo%20seu%20estivesse%20ai%20com%20voc%C3%AA.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'o que faria comigo se eu estivesse aí com você????',\n          delay: 6000\n        }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Terceira interação: áudio molhada\nif (msgs === 3) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'texto',\n          mensagem: 'nossa tô mt molhadinha',\n          delay: 4000\n        },\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%206%20to%20ficando%20molhadinha%20gravando%20esses%20videos%20e%20gemendo.ogg`,\n          delay: 6000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{ json: { ...input, enviarSequencia: false, chamarGroqDepois: false } }];"
+      },
+      "id": "etapa-4-016",
+      "name": "ETAPA 4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 700]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 5 - AQUECIMENTO 2\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%209%20mostrando%20peitinho.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%2010%20balan%C3%A7ando%20os%20seios%20pelados.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%2011%20brincando%20com%20os%20seios.mp4`,\n          delay: 10000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'mor não sei se saiu áudio mas gostou dos meus videozinhos????',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: MUITO provocante, explícita, urgente. Fale o quanto você está excitada. Mencione que está molhada, com tesão. Seja bem explícita. Crie urgência e desejo intenso.'\n  }\n}];"
+      },
+      "id": "etapa-5-017",
+      "name": "ETAPA 5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 800]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 6 - AQUECIMENTO 3\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%2012%20olha%20como%20deixou%20eles%20durinhos.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'olha como eles estão durinhos, já estou até suando',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Explícito ao máximo, urgente, quente. Seja a mais explícita possível. Fale de buceta, pau, gozar. Diga que quer muito ele. Crie máxima urgência para prepará-lo para a oferta.'\n  }\n}];"
+      },
+      "id": "etapa-6-018",
+      "name": "ETAPA 6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 900]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 7 - CTA E PAGAMENTO\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\n// Se não está aguardando pagamento, enviar CTA\nif (!input.lead.aguardando_pagamento) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%207%20cta%20para%20chamada%20de%20video%2C%20canal%20telegram%2C%20passar%20wpp%2C%20pedindo%20para%20ajudar.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'amor escuta o áudio 😊',\n          delay: 4000\n        },\n        {\n          tipo: 'foto',\n          url: `${baseUrl}/foto%20geladeira%20vazia%20para%20mandar%20ap%C3%B3s%20o%20audio%20de%20cta.jpg`,\n          delay: 5000\n        },\n        {\n          tipo: 'video',\n          url: `${baseUrl}/video%2013%20oferta.mp4`,\n          delay: 8000\n        },\n        {\n          tipo: 'texto',\n          mensagem: `Olha essa préviazinha que te mandei 👀🔥\\nposso te entregar tudinho que você quer dentro do meu VIP, olha o que você pode ver:\\n\\n💘 Vídeos e fotos mostrando a minha bucetinha e me tocando bem gostosinho 💦\\n🤭 Videos exclusivos pra você, te fazendo gozar só eu e você\\n🔥 Meu whatsapp pessoal\\n💎 Sempre posto coisa nova\\n😍 Chamada de vídeo só nós 2\\n💎 E muito mais meu bem...\\n\\ntudo pra você amor só por 20 reais`,\n          delay: 10000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'pode me ajudar amor? pfr 🙏',\n          delay: 4000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'amor vou te enviar a chave pix ok?',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      gerarPix: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Se já enviou PIX, apenas aguarda\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. O lead já recebeu a oferta e o PIX. Seja gentil mas insista educadamente. Pergunte se teve algum problema, se conseguiu fazer o PIX. Reforce que está esperando ansiosa.'\n  }\n}];"
+      },
+      "id": "etapa-7-019",
+      "name": "ETAPA 7",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 1000]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// ETAPA 8 - RECUPERAÇÃO DE PAGAMENTO\n// ============================================\n\nconst input = $json;\nconst baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        {\n          tipo: 'audio',\n          url: `${baseUrl}/audio%208%20recupera%C3%A7%C3%A3o%20de%20pix%201.ogg`,\n          delay: 6000\n        },\n        {\n          tipo: 'texto',\n          mensagem: 'amor, teve algum problema com o pix? me avisa que eu te ajudo ❤️',\n          delay: 5000\n        }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Seja compreensiva e ajude com problemas de pagamento. Ofereça suporte, pergunte qual é a dificuldade. Seja gentil mas mantenha o interesse.'\n  }\n}];"
+      },
+      "id": "etapa-8-020",
+      "name": "ETAPA 8",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 1100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "merge-all",
+              "name": "merge-all",
+              "type": "object",
+              "value": "={{ $json }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "merge-etapas-021",
+      "name": "11. Merge Etapas",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [2250, 650]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.enviarSequencia }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-sequencia-022",
+      "name": "12. Enviar Sequência?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2450, 650]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.protegerSequencia }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-protecao-023",
+      "name": "13. Proteger Sequência?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2650, 550]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET is_sending_sequence = true WHERE chat_id = $1",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "ativar-protecao-024",
+      "name": "14. Ativar Proteção",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2850, 450],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Processar cada item da sequência\nconst sequencia = $json.sequencia || [];\nreturn sequencia.map(item => ({\n  json: {\n    ...$json,\n    itemSequencia: item\n  }\n}));"
+      },
+      "id": "split-sequencia-025",
+      "name": "15. Split Sequência",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3050, 650]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.itemSequencia.tipo }}",
+        "rules": {
+          "rules": [
+            { "outputKey": "texto" },
+            { "outputKey": "audio" },
+            { "outputKey": "video" },
+            { "outputKey": "foto" }
+          ]
+        }
+      },
+      "id": "switch-tipo-026",
+      "name": "16. Switch Tipo",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [3250, 650]
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.itemSequencia.mensagem }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-texto-027",
+      "name": "Enviar Texto",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3450, 450],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "operation": "sendAudio",
+        "binaryData": false,
+        "file": "={{ $json.itemSequencia.url }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-audio-028",
+      "name": "Enviar Audio",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3450, 550],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "operation": "sendVideo",
+        "binaryData": false,
+        "file": "={{ $json.itemSequencia.url }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-video-029",
+      "name": "Enviar Video",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3450, 650],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "operation": "sendPhoto",
+        "binaryData": false,
+        "photo": "={{ $json.itemSequencia.url }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-foto-030",
+      "name": "Enviar Foto",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3450, 750],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "unit": "milliseconds",
+        "amount": "={{ $json.itemSequencia.delay }}"
+      },
+      "id": "delay-031",
+      "name": "17. Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [3650, 650],
+      "webhookId": "delay-webhook"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET is_sending_sequence = false WHERE chat_id = $1",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "desativar-protecao-032",
+      "name": "18. Desativar Proteção",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3850, 650],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.gerarPix }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-pix-033",
+      "name": "19. Gerar PIX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [4050, 650]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.syncpay.com.br/v1/pix",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"value\": 20.00,\n  \"customer_id\": $json.chatId,\n  \"description\": \"Acesso VIP Ana Julia\"\n} }}",
+        "options": {}
+      },
+      "id": "gerar-pix-034",
+      "name": "20. Gerar PIX Syncpay",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [4250, 550],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SYNCPAY",
+          "name": "Syncpay API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extrair código PIX da resposta\nconst response = $json;\nconst pixCode = response.pix_code || response.qr_code_text || response.brcode;\n\nif (!pixCode) {\n  console.error('❌ Erro: PIX code não encontrado na resposta:', response);\n  return [];\n}\n\nconsole.log('✅ PIX gerado com sucesso');\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    pixCode,\n    pixResponse: response\n  }\n}];"
+      },
+      "id": "extrair-pix-035",
+      "name": "21. Extrair PIX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4450, 550]
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.pixCode }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-pix-036",
+      "name": "22. Enviar PIX",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [4650, 550],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\n\nreturn [{\n  json: {\n    ...$json,\n    sequenciaPosPix: [\n      {\n        tipo: 'texto',\n        mensagem: 'prontinho meu bem 🥰. Já vou me preparar aqui para enviar as fotinhas e os vídeos pra você',\n        delay: 5000\n      },\n      {\n        tipo: 'foto',\n        url: `${baseUrl}/foto%20instrucoes%20banco.jpg`,\n        delay: 4000\n      },\n      {\n        tipo: 'texto',\n        mensagem: 'ah, e no banco é só usar a opção pix copia e cola, tá?',\n        delay: 4000\n      }\n    ]\n  }\n}];"
+      },
+      "id": "sequencia-pos-pix-037",
+      "name": "23. Seq Pós-PIX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4850, 550]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET aguardando_pagamento = true, payment_status = 'PENDING', entrou_etapa_7_em = NOW() WHERE chat_id = $1",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "marcar-aguardando-038",
+      "name": "24. Marcar Aguardando",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [5050, 550],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.chamarGroqDepois }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-groq-039",
+      "name": "25. Chamar Groq?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2650, 750]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": $json.promptSystem || \"Você é Ana Julia, uma garota brasileira provocante e sensual.\"\n    },\n    ...$json.lead.historico.slice(-10),\n    {\n      \"role\": \"user\",\n      \"content\": $json.texto\n    }\n  ],\n  \"temperature\": 0.8,\n  \"max_tokens\": 150\n} }}",
+        "options": {}
+      },
+      "id": "groq-ai-040",
+      "name": "26. Groq AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2850, 850],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_GROQ",
+          "name": "Groq API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response = $json;\nconst respostaBot = response.choices?.[0]?.message?.content || 'Desculpa amor, não consegui responder 😢';\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    respostaBot\n  }\n}];"
+      },
+      "id": "extrair-groq-041",
+      "name": "27. Extrair Resposta Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3050, 850]
+    },
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.respostaBot }}",
+        "additionalFields": {}
+      },
+      "id": "enviar-groq-042",
+      "name": "28. Enviar Resposta Groq",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3250, 850],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_TELEGRAM",
+          "name": "Telegram Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// VERIFICAR SE DEVE AVANÇAR DE ETAPA\n// ============================================\n\nconst input = $json;\nconst lead = input.lead;\n\n// Regras de progressão por etapa\nconst regras = {\n  0: { interacoes: 3 },\n  1: { interacoes: 4 },\n  2: { interacoes: 4 },\n  3: { interacoes: 1 },\n  4: { interacoes: 1 },\n  5: { interacoes: 2 },\n  6: { interacoes: 2 },\n  7: { interacoes: 0 }\n};\n\nconst etapaAtual = lead.etapa || 0;\nconst minimoInteracoes = regras[etapaAtual]?.interacoes || 0;\n\nconst mensagensLead = lead.mensagens_na_etapa || 0;\nconst respostasBot = lead.respostas_bot_na_etapa || 0;\n\nconst podeAvancar = (\n  mensagensLead >= minimoInteracoes &&\n  respostasBot >= minimoInteracoes\n);\n\nif (podeAvancar && etapaAtual < 7) {\n  lead.etapa = etapaAtual + 1;\n  lead.sub_etapa = 0;\n  lead.mensagens_na_etapa = 0;\n  lead.respostas_bot_na_etapa = 0;\n  \n  console.log(`✅ Lead ${lead.chat_id} avançou: Etapa ${etapaAtual} → ${lead.etapa}`);\n} else {\n  // Incrementar contador de respostas\n  lead.respostas_bot_na_etapa = (lead.respostas_bot_na_etapa || 0) + 1;\n  \n  console.log(`📊 Lead ${lead.chat_id} - Etapa ${etapaAtual}: ${mensagensLead}/${minimoInteracoes} msgs, ${respostasBot}/${minimoInteracoes} respostas`);\n}\n\n// Adicionar resposta ao histórico\nif (input.respostaBot) {\n  lead.historico.push({\n    role: 'assistant',\n    content: input.respostaBot,\n    ts: new Date().toISOString()\n  });\n}\n\nreturn [{ json: { ...input, lead } }];"
+      },
+      "id": "verificar-progressao-043",
+      "name": "29. Verificar Progressão",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3450, 850]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET etapa = $1, sub_etapa = $2, mensagens_na_etapa = $3, respostas_bot_na_etapa = $4, historico = $5, processando = false WHERE chat_id = $6",
+        "queryParameters": "={{ {\n  \"values\": [\n    $json.lead.etapa,\n    $json.lead.sub_etapa,\n    $json.lead.mensagens_na_etapa,\n    $json.lead.respostas_bot_na_etapa,\n    JSON.stringify($json.lead.historico),\n    $json.chatId\n  ]\n} }}"
+      },
+      "id": "salvar-final-044",
+      "name": "30. Salvar e Liberar Lock",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3650, 850],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET processando = false WHERE chat_id = $1",
+        "queryParameters": "={{ { \"values\": [$json.chatId] } }}"
+      },
+      "id": "liberar-lock-final-045",
+      "name": "31. Liberar Lock Final",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [5250, 650],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_SUA_CREDENCIAL_SUPABASE",
+          "name": "Supabase Ana Julia"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "1. Extrair Mensagem", "type": "main", "index": 0 }]]
+    },
+    "1. Extrair Mensagem": {
+      "main": [[{ "node": "2. Buscar Lead", "type": "main", "index": 0 }]]
+    },
+    "2. Buscar Lead": {
+      "main": [[{ "node": "3. Preparar Lead", "type": "main", "index": 0 }]]
+    },
+    "3. Preparar Lead": {
+      "main": [[{ "node": "4. Check Lock", "type": "main", "index": 0 }]]
+    },
+    "4. Check Lock": {
+      "main": [[{ "node": "5. Atualizar Lock ON", "type": "main", "index": 0 }]]
+    },
+    "5. Atualizar Lock ON": {
+      "main": [[{ "node": "6. É /start?", "type": "main", "index": 0 }]]
+    },
+    "6. É /start?": {
+      "main": [
+        [{ "node": "7. Reset para Etapa 0", "type": "main", "index": 0 }],
+        [{ "node": "8. É msg anti-bot?", "type": "main", "index": 0 }]
+      ]
+    },
+    "7. Reset para Etapa 0": {
+      "main": [[{ "node": "10. Switch Etapa", "type": "main", "index": 0 }]]
+    },
+    "8. É msg anti-bot?": {
+      "main": [
+        [{ "node": "9. Resposta Anti-Bot", "type": "main", "index": 0 }],
+        [{ "node": "10. Switch Etapa", "type": "main", "index": 0 }]
+      ]
+    },
+    "9. Resposta Anti-Bot": {
+      "main": [[{ "node": "12. Enviar Sequência?", "type": "main", "index": 0 }]]
+    },
+    "10. Switch Etapa": {
+      "main": [
+        [{ "node": "ETAPA 0", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 1", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 2", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 3", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 4", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 5", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 6", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 7", "type": "main", "index": 0 }],
+        [{ "node": "ETAPA 8", "type": "main", "index": 0 }]
+      ]
+    },
+    "ETAPA 0": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 1": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 2": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 3": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 4": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 5": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 6": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 7": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "ETAPA 8": {
+      "main": [[{ "node": "11. Merge Etapas", "type": "main", "index": 0 }]]
+    },
+    "11. Merge Etapas": {
+      "main": [[{ "node": "12. Enviar Sequência?", "type": "main", "index": 0 }]]
+    },
+    "12. Enviar Sequência?": {
+      "main": [
+        [{ "node": "13. Proteger Sequência?", "type": "main", "index": 0 }],
+        [{ "node": "25. Chamar Groq?", "type": "main", "index": 0 }]
+      ]
+    },
+    "13. Proteger Sequência?": {
+      "main": [
+        [{ "node": "14. Ativar Proteção", "type": "main", "index": 0 }],
+        [{ "node": "15. Split Sequência", "type": "main", "index": 0 }]
+      ]
+    },
+    "14. Ativar Proteção": {
+      "main": [[{ "node": "15. Split Sequência", "type": "main", "index": 0 }]]
+    },
+    "15. Split Sequência": {
+      "main": [[{ "node": "16. Switch Tipo", "type": "main", "index": 0 }]]
+    },
+    "16. Switch Tipo": {
+      "main": [
+        [{ "node": "Enviar Texto", "type": "main", "index": 0 }],
+        [{ "node": "Enviar Audio", "type": "main", "index": 0 }],
+        [{ "node": "Enviar Video", "type": "main", "index": 0 }],
+        [{ "node": "Enviar Foto", "type": "main", "index": 0 }]
+      ]
+    },
+    "Enviar Texto": {
+      "main": [[{ "node": "17. Delay", "type": "main", "index": 0 }]]
+    },
+    "Enviar Audio": {
+      "main": [[{ "node": "17. Delay", "type": "main", "index": 0 }]]
+    },
+    "Enviar Video": {
+      "main": [[{ "node": "17. Delay", "type": "main", "index": 0 }]]
+    },
+    "Enviar Foto": {
+      "main": [[{ "node": "17. Delay", "type": "main", "index": 0 }]]
+    },
+    "17. Delay": {
+      "main": [[{ "node": "18. Desativar Proteção", "type": "main", "index": 0 }]]
+    },
+    "18. Desativar Proteção": {
+      "main": [[{ "node": "19. Gerar PIX?", "type": "main", "index": 0 }]]
+    },
+    "19. Gerar PIX?": {
+      "main": [
+        [{ "node": "20. Gerar PIX Syncpay", "type": "main", "index": 0 }],
+        [{ "node": "31. Liberar Lock Final", "type": "main", "index": 0 }]
+      ]
+    },
+    "20. Gerar PIX Syncpay": {
+      "main": [[{ "node": "21. Extrair PIX", "type": "main", "index": 0 }]]
+    },
+    "21. Extrair PIX": {
+      "main": [[{ "node": "22. Enviar PIX", "type": "main", "index": 0 }]]
+    },
+    "22. Enviar PIX": {
+      "main": [[{ "node": "23. Seq Pós-PIX", "type": "main", "index": 0 }]]
+    },
+    "23. Seq Pós-PIX": {
+      "main": [[{ "node": "24. Marcar Aguardando", "type": "main", "index": 0 }]]
+    },
+    "24. Marcar Aguardando": {
+      "main": [[{ "node": "31. Liberar Lock Final", "type": "main", "index": 0 }]]
+    },
+    "25. Chamar Groq?": {
+      "main": [
+        [{ "node": "26. Groq AI", "type": "main", "index": 0 }],
+        [{ "node": "31. Liberar Lock Final", "type": "main", "index": 0 }]
+      ]
+    },
+    "26. Groq AI": {
+      "main": [[{ "node": "27. Extrair Resposta Groq", "type": "main", "index": 0 }]]
+    },
+    "27. Extrair Resposta Groq": {
+      "main": [[{ "node": "28. Enviar Resposta Groq", "type": "main", "index": 0 }]]
+    },
+    "28. Enviar Resposta Groq": {
+      "main": [[{ "node": "29. Verificar Progressão", "type": "main", "index": 0 }]]
+    },
+    "29. Verificar Progressão": {
+      "main": [[{ "node": "30. Salvar e Liberar Lock", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-28T00:00:00.000Z",
+  "versionId": "1"
+}
