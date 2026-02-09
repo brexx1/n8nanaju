@@ -1,0 +1,4421 @@
+{
+  "name": "Bot Ana Julia - OTIMIZADO v9 (Correções Críticas)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "86e582f5-44cd-444b-bf97-87fa4d95acaf",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3168,
+        1824
+      ],
+      "webhookId": "ana-julia-bot-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "eWmF3qbABdY8mcEP",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Extrair Mensagem (NORMALIZADOR)\n// Entrada: update do Telegram (Webhook)\n// Saída: objeto padrão p/ o resto do fluxo\n\nconst update = $json;\n\n// Pega a mensagem (message, edited_message, callback_query etc)\nconst msg =\n  update.message ||\n  update.edited_message ||\n  (update.callback_query ? update.callback_query.message : null);\n\nconst from = msg?.from || update?.callback_query?.from || {};\nconst chat = msg?.chat || {};\nconst textoBruto =\n  msg?.text ||\n  msg?.caption ||\n  update?.callback_query?.data ||\n  \"\";\n\n// Flags de mídia\nconst hasPhoto = !!(msg?.photo && msg.photo.length);\nconst hasVideo = !!msg?.video;\nconst hasAudio = !!msg?.voice || !!msg?.audio;\nconst hasDocument = !!msg?.document;\n\n// Normaliza texto\nconst texto = (textoBruto || \"\").toLowerCase().trim();\n\n// ✅ Anti-bot robusto (sem false-positive tipo \"putaria\" conter \"ia\")\nconst antiBotRegexes = [\n  /\\b(bot|fake|chatbot)\\b/i,\n  /\\b(rob[oô])\\b/i,\n  /\\b(gpt|chatgpt|chat\\s*gpt)\\b/i,\n  /intelig[êe]ncia\\s+artificial/i,\n  /\\b(ia|ai)\\b/i,\n  /\\b(pessoa\\s+real|de\\s+verdade|existe\\s+mesmo|verdadeir[ao])\\b/i,\n  /\\b(voc[eê]|vc)\\s*(é|e)\\s*real\\b/i,\n  /\\b(human[ao])\\b/i,\n];\n\nconst isBotMessage = antiBotRegexes.some((re) => re.test(texto));\n\n// Identificadores\nconst chatId = chat?.id ? String(chat.id) : null;\nconst userName = from?.username || from?.first_name || \"lead\";\n\n// Tipo de mensagem\nlet tipoMensagem = \"TEXTO\";\nif (hasPhoto) tipoMensagem = \"FOTO\";\nelse if (hasVideo) tipoMensagem = \"VIDEO\";\nelse if (hasAudio) tipoMensagem = \"AUDIO\";\nelse if (hasDocument) tipoMensagem = \"DOCUMENTO\";\n\n// isStart\nconst isStart = texto === \"/start\";\n\n// messageId / timestamp\nconst messageId = msg?.message_id ? String(msg.message_id) : null;\nconst timestampAtual = msg?.date ? msg.date * 1000 : Date.now();\n\nreturn [\n  {\n    json: {\n      chatId,\n      userName,\n      texto: textoBruto || \"\",\n      tipoMensagem,\n      isStart,\n      isBotMessage, // aqui = \"lead está testando se é bot\"\n      hasPhoto,\n      hasVideo,\n      hasAudio,\n      hasDocument,\n      mediaFileId:\n        msg?.photo?.[msg.photo.length - 1]?.file_id ||\n        msg?.video?.file_id ||\n        msg?.voice?.file_id ||\n        msg?.audio?.file_id ||\n        msg?.document?.file_id ||\n        null,\n      mediaType:\n        hasPhoto ? \"photo\" :\n        hasVideo ? \"video\" :\n        hasAudio ? \"audio\" :\n        hasDocument ? \"document\" :\n        null,\n      mediaMimeType: msg?.document?.mime_type || msg?.audio?.mime_type || msg?.video?.mime_type || null,\n      mediaFileName: msg?.document?.file_name || null,\n      mediaGroupId: msg?.media_group_id || null,\n      timestampAtual,\n      messageId,\n      fromTelegram: {\n        fromIsBot: !!from?.is_bot,\n        chatType: chat?.type || null,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "12822f68-690a-4e49-8c30-ce9adf01f634",
+      "name": "1. Extrair Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2960,
+        1824
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM public.leads WHERE chat_id = $1 LIMIT 1\n",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}"
+        }
+      },
+      "id": "83560d58-7029-4c35-8c41-57d7f455bfff",
+      "name": "2. Buscar Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -2768,
+        1824
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// PREPARAR DADOS DO LEAD\nlet input = {};\ntry {\n  input = $items(\"1. Extrair Mensagem\")[0].json;\n} catch (e) {\n  input = $json || {};\n}\n\nlet leadResults = [];\ntry {\n  leadResults = $('2. Buscar Lead').all();\n} catch (e) {\n  leadResults = [];\n}\n\nlet leadData = null;\nif (leadResults && leadResults.length > 0) {\n  const result = leadResults[0].json;\n  if (Array.isArray(result) && result.length > 0) leadData = result[0];\n  else if (result && result.chat_id) leadData = result;\n}\nlet lead;\nlet isNewLead = false;\nif (leadData && leadData.chat_id) {\n  lead = { ...leadData, historico: Array.isArray(leadData.historico) ? leadData.historico : [] };\n} else {\n  isNewLead = true;\n  lead = {\n    chat_id: input.chatId,\n    nome: input.userName,\n    etapa: 0,\n    sub_etapa: 0,\n    mensagens_na_etapa: 0,\n    respostas_bot_na_etapa: 0,\n    is_sending_sequence: false,\n    processando: false,\n    aguardando_pagamento: false,\n    status: 'ATIVO',\n    payment_status: null,\n    historico: [],\n    cutucadas_enviadas: 0,\n    criado_em: new Date().toISOString(),\n    ultima_interacao: new Date().toISOString(),\n    ultima_mensagem_lead: new Date().toISOString(),\n    entrou_etapa_7_em: null,\n    groq_calls_cobranca: 0\n  };\n}\nreturn [{ json: { ...input, lead, isNewLead } }];"
+      },
+      "id": "0cb99066-bb6d-4cb4-b585-f070ba5de451",
+      "name": "3. Preparar Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2560,
+        1824
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// CHECK LOCK (simples e eficiente para alta concorrência)\nconst lead = $json.lead || {};\nconst agora = Date.now();\n\n// Se ficou travado em \"enviando sequência\" por muito tempo, libera (failsafe)\nif (lead.is_sending_sequence === true) {\n  const sinceMs = new Date(lead.processando_desde || lead.ultima_interacao || 0).getTime();\n  const elapsed = sinceMs ? (agora - sinceMs) : 0;\n\n  // janela normal: ignora mensagens enquanto a sequência está sendo enviada\n  if (elapsed > 0 && elapsed < 60000) return [];\n\n  // se passou muito tempo, considera lock stale e libera\n  lead.is_sending_sequence = false;\n}\n\n// Se está processando recentemente (< 5s), ignora mensagem\nif (lead.processando === true) {\n  const processandoDesde = new Date(lead.processando_desde || new Date()).getTime();\n  const tempoProcessando = agora - processandoDesde;\n  if (tempoProcessando < 5000) return [];\n}\n\n// Marca como processando\nlead.processando = true;\nlead.processando_desde = new Date().toISOString();\n\nreturn [{ json: { ...$json, lead } }];\n"
+      },
+      "id": "243eb6c7-72d0-4835-87f6-4ec3b4ce231f",
+      "name": "4. Check Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2368,
+        1824
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.leads \n(\n  chat_id, nome, etapa, sub_etapa, mensagens_na_etapa, respostas_bot_na_etapa,\n  is_sending_sequence, processando, processando_desde, aguardando_pagamento,\n  status, payment_status, historico, cutucadas_enviadas, criado_em,\n  ultima_interacao, ultima_mensagem_lead, entrou_etapa_7_em\n)\nVALUES \n(\n  $1, $2, $3, $4, $5, $6, $7, true, NOW(), $8, $9, $10, $11::jsonb, $12, \n  CASE WHEN $13 IS NULL THEN NOW() ELSE $13::timestamp END,\n  NOW(), NOW(), $14::timestamp\n)\nON CONFLICT (chat_id) DO UPDATE SET\n  processando = true,\n  processando_desde = NOW(),\n  ultima_interacao = NOW()\nWHERE \n  (leads.processando = false OR leads.processando_desde < NOW() - INTERVAL '90 seconds')\n  AND leads.is_sending_sequence = false\nRETURNING *;",
+        "options": {
+          "queryReplacement": "$1 = {{ String($json.lead.chat_id) }}\n$2 = {{ $json.lead.nome }}\n$3 = {{ $json.lead.etapa }}\n$4 = {{ $json.lead.sub_etapa }}\n$5 = {{ $json.lead.mensagens_na_etapa }}\n$6 = {{ $json.lead.respostas_bot_na_etapa }}\n$7 = {{ $json.lead.is_sending_sequence }}\n$8 = {{ $json.lead.aguardando_pagamento }}\n$9 = {{ $json.lead.status }}\n$10 = {{ $json.lead.payment_status }}\n$11 = {{ JSON.stringify($json.lead.historico || []) }}\n$12 = {{ $json.lead.cutucadas_enviadas }}\n$13 = {{ $json.lead.criado_em }}\n$14 = {{ $json.lead.entrou_etapa_7_em }}"
+        }
+      },
+      "id": "0b0bf4da-b1d0-4a34-bc37-43785b2d4235",
+      "name": "5. Atualizar Lock ON",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1936,
+        1824
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 5b. Incrementar Msg Lead (com verificação de lock atômico)\n// IMPORTANTE: Se a query do node 5 não retornou dados, significa que:\n// - is_sending_sequence = true (outra sequência está em andamento)\n// - Neste caso, devemos PARAR o fluxo para evitar duplicação\n\n// Primeiro, verifica se o lock foi adquirido (node 5 retornou dados)\nlet lockResult = null;\ntry {\n  const lockNode = $items('5. Atualizar Lock ON');\n  if (lockNode && lockNode.length > 0) {\n    lockResult = lockNode[0].json;\n  }\n} catch (e) {\n  lockResult = $json;\n}\n\n// Se não retornou chat_id, significa que o lock NÃO foi adquirido\n// (provavelmente is_sending_sequence = true no banco)\nconst lockAdquirido = !!(lockResult && (lockResult.chat_id || lockResult[0]?.chat_id));\n\nif (!lockAdquirido) {\n  // Lock não adquirido - sequência em andamento, PARA o fluxo\n  console.log('🔒 Lock NÃO adquirido - sequência em andamento, ignorando mensagem');\n  return [];\n}\n\nconst base =\n  $node['4. Check Lock']?.json ||\n  $node['4b. Montar Params UPSERT']?.json ||\n  $json;\n\nconst lead = base.lead;\nif (!lead) return []; // sem lead, não faz nada\n\nlead.historico = Array.isArray(lead.historico) ? lead.historico : [];\n\n// Conta como interação: texto OU mídia (foto, vídeo, áudio, documento)\nconst temTexto = base.texto && String(base.texto).trim().length > 0;\nconst temMidia = base.hasPhoto || base.hasVideo || base.hasAudio || base.hasDocument;\n\nif (temTexto) {\n  // Mensagem de texto\n  lead.historico.push({ \n    role: 'user', \n    content: base.texto, \n    ts: new Date().toISOString(),\n    tipo: 'texto'\n  });\n  lead.mensagens_na_etapa = (lead.mensagens_na_etapa || 0) + 1;\n} else if (temMidia) {\n  // Mídia recebida - conta como interação\n  let descricaoMidia = '[Mídia recebida]';\n  if (base.hasPhoto) descricaoMidia = '[Foto recebida]';\n  else if (base.hasVideo) descricaoMidia = '[Vídeo recebido]';\n  else if (base.hasAudio) descricaoMidia = '[Áudio recebido]';\n  else if (base.hasDocument) descricaoMidia = `[Documento: ${base.mediaFileName || 'arquivo'}]`;\n\n  lead.historico.push({ \n    role: 'user', \n    content: descricaoMidia, \n    ts: new Date().toISOString(),\n    tipo: 'midia',\n    mediaType: base.mediaType,\n    mediaFileId: base.mediaFileId\n  });\n  lead.mensagens_na_etapa = (lead.mensagens_na_etapa || 0) + 1;\n}\n\nif (lead.historico.length > 20) lead.historico = lead.historico.slice(-20);\n\nreturn [{ json: { ...base, lead } }];"
+      },
+      "id": "68349919-8ed7-4a73-99d7-fa28c8193a78",
+      "name": "5b. Incrementar Msg Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1728,
+        1776
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isStart }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "47f215f9-75d6-493d-8ad0-ec5088e16ad0",
+      "name": "6. É /start?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1488,
+        2048
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reset /start\nconst input = $json;\ninput.lead.etapa = 0;\ninput.lead.sub_etapa = 0;\ninput.lead.mensagens_na_etapa = 0;\ninput.lead.respostas_bot_na_etapa = 0;\ninput.lead.is_sending_sequence = false;\ninput.lead.aguardando_pagamento = false;\ninput.lead.cutucadas_enviadas = 0;\nreturn [{ json: input }];"
+      },
+      "id": "07ac46dd-ba5e-4a78-bd10-89f0dce6f4bd",
+      "name": "7. Reset para Etapa 0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        1440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads\nSET etapa=0,\n    sub_etapa=0,\n    mensagens_na_etapa=0,\n    respostas_bot_na_etapa=0,\n    processando=false,\n    processando_desde=NULL,\n    is_sending_sequence=false,\n    aguardando_pagamento=false,\n    cutucadas_enviadas=0,\n    ultima_interacao=NOW(),\n    ultima_mensagem_lead=NOW(),\n    payment_status=NULL,\n    status='ATIVO',\n    pagamento_transaction_id=NULL,\n    pagamento_valor=NULL,\n    pagamento_pago_em=NULL,\n    pagamento_metodo=NULL,\n    pagamento=NULL,\n    pagamento_pix_code=NULL,\n    pagamento_identifier=NULL,\n    pagamento_gerado_em=NULL,\n    pagamento_expires_em=NULL,\n    pagamento_last_sent_at=NULL\nWHERE chat_id=$1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}"
+        }
+      },
+      "id": "0fbeddbf-5014-48b6-bdbc-8b753c04a6b5",
+      "name": "7b. Persistir Reset",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1136,
+        1392
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isBotMessage }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "4c1ca98d-2cfb-4dd6-bfab-fb50fdcf0c12",
+      "name": "8. É msg anti-bot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1264,
+        1920
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\nreturn [{ json: { ...$json, sequencia: [ { tipo: 'audio', url: `${baseUrl}/audio%20confirmando%20que%20%C3%A9%20humana.ogg`, delay: 3000 }, { tipo: 'texto', mensagem: 'kkkkk eu sou de verdade amor, uma mulher safada te assusta ?', delay: 4000 } ], enviarSequencia: true, pularGroq: true } }];"
+      },
+      "id": "cc0b0cb0-de6b-4161-9417-3ef5ba792ddf",
+      "name": "9. Resposta Anti-Bot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 0 (corrigido: não repete a sequência após a 1ª resposta)\n// Links conferidos via variáveis que você passou: ETAPA_0_AUDIO_1 e ETAPA_0_VIDEO_1\nconst input = $json;\n\n// Links completos (exatos)\nconst ETAPA_0_AUDIO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%20numero%201%20anajulia%20boas%20vindas.ogg';\nconst ETAPA_0_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%201%20sou%20a%20aninha%20%20td%20bem%20com%20vc.mp4';\n\n// Envia a sequência de abertura SOMENTE no /start ou quando é um lead novo\nconst deveEnviarIntro = (input.isStart === true) || (input.isNewLead === true);\n\nif (deveEnviarIntro) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E0-01', tipo: 'texto', mensagem: 'oi gatinho', delay: 3000 },\n        { id: 'E0-02', tipo: 'audio', url: ETAPA_0_AUDIO_1, delay: 6000 },\n        { id: 'E0-03', tipo: 'video', url: ETAPA_0_VIDEO_1, delay: 8000 },\n        { id: 'E0-04', tipo: 'texto', mensagem: 'tô num tédio amor kkkk queria conversar com alguém, sabe fazer alguma safeza 😈🙄', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Qualquer outra mensagem na etapa 0: chama Groq\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia, brasileira (18+). Tom: amigável, leve, divertido. Flerta de forma sutil. Linguagem informal (vc, kkkk). Respostas curtas (1-3 linhas). Sempre faça uma pergunta para engajar.'\n  }\n}];\n"
+      },
+      "id": "b52c072c-107a-4117-92f2-72a5371cbb38",
+      "name": "ETAPA 0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        1776
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 1 (organizada)\n// Link conferido via variável que você passou: ETAPA_1_AUDIO_1\nconst input = $json;\n\n// Link completo (exato)\nconst ETAPA_1_AUDIO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%20numero%202%20salvar%20contato.ogg';\n\nif ((input.lead?.mensagens_na_etapa ?? 0) <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E1-01', tipo: 'audio', url: ETAPA_1_AUDIO_1, delay: 6000 },\n        { id: 'E1-02', tipo: 'texto', mensagem: 'vou salvar seu contatinho aqui amor', delay: 4000 },\n        { id: 'E1-03', tipo: 'texto', mensagem: 'depois te passo meu contatinho lá no whatsapp tá bom?', delay: 5000 },\n        { id: 'E1-04', tipo: 'texto', mensagem: 'to sozinha em casa agora', delay: 4000 },\n        { id: 'E1-05', tipo: 'texto', mensagem: 'vc curte falar sobre putaria ?', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Qualquer outra mensagem na etapa 1: chama Groq\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Provocante mas não explícita ainda. Crie tensão sexual gradualmente. Faça perguntas mais íntimas (\"gosta de mulher assim?\", \"curte o que?\"). Seja flertadora e curiosa.'\n  }\n}];\n"
+      },
+      "id": "defdd4ac-e999-4477-b2a3-b0ed2b87a166",
+      "name": "ETAPA 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        1936
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 2 (organizada)\n// Link conferido via variável que você passou: ETAPA_2_VIDEO_1\nconst input = $json;\n\n// Link completo (exato)\nconst ETAPA_2_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%202%20nossa%20amor%20t%C3%B4%20me%20sentindo%20t%C3%A3o%20linda.mp4';\n\nif ((input.lead?.mensagens_na_etapa ?? 0) <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E2-01', tipo: 'video', url: ETAPA_2_VIDEO_1, delay: 8000 },\n        { id: 'E2-02', tipo: 'texto', mensagem: 'nossa amor tô me sentindo tão linda', delay: 4000 },\n        { id: 'E2-03', tipo: 'texto', mensagem: 'gostou do videozinho??', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// Qualquer outra mensagem na etapa 2: chama Groq\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Safada, direta, provocante. Fale abertamente sobre tesão e desejo. Mencione seus seios, corpo. Diga que gosta de se exibir. Crie urgência. Seja explícita mas ainda conversacional.'\n  }\n}];\n"
+      },
+      "id": "2b7c3359-b29a-45f6-b64e-220eeb5baca6",
+      "name": "ETAPA 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 3 (organizada + sem // nos links)\nconst input = $json;\n\n// Links completos (exatos) — conforme você passou\nconst ETAPA_3_AUDIO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%203%20desafio%20numero1.ogg';\nconst ETAPA_3_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%203%20mostrando%20suti%C3%A3.mp4';\nconst ETAPA_3_VIDEO_2 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%204%20apertando%20os%20seios.mp4';\nconst ETAPA_3_VIDEO_3 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%205%20hahahaah%20agora%20eu%20fiquei%20ati%C3%A7ada.mp4';\n\nconst mensagensEtapa = (input.lead?.mensagens_na_etapa ?? 0);\n\n// 1) Primeira vez (ou até 1 msg na etapa): manda desafio e AGUARDA resposta\nif (mensagensEtapa <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E3-01', tipo: 'texto', mensagem: 'amor kkkk tive uma ideia', delay: 4000 },\n        { id: 'E3-02', tipo: 'audio', url: ETAPA_3_AUDIO_1, delay: 6000 },\n        { id: 'E3-03', tipo: 'texto', mensagem: 'vai me fala rs qual é a cor do sutiã que estou usando agr? estou facilitando pra você kkk', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false,\n      aguardarResposta: true\n    }\n  }];\n}\n\n// 2) Na 2ª mensagem do lead dentro da etapa: revela + manda vídeos (sequência protegida)\nif (mensagensEtapa === 2) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E3-04', tipo: 'texto', mensagem: 'é rosaa amorzinho', delay: 3000 },\n        { id: 'E3-05', tipo: 'texto', mensagem: 'vou ser boazinha e mandar o video dos meus peitinhos', delay: 5000 },\n        { id: 'E3-06', tipo: 'video', url: ETAPA_3_VIDEO_1, delay: 8000 },\n        { id: 'E3-07', tipo: 'video', url: ETAPA_3_VIDEO_2, delay: 10000 },\n        { id: 'E3-08', tipo: 'video', url: ETAPA_3_VIDEO_3, delay: 10000 },\n        { id: 'E3-09', tipo: 'texto', mensagem: 'hahahaah agora eu fiquei atiçada', delay: 4000 },\n        { id: 'E3-10', tipo: 'texto', mensagem: 'quero conversar mais com vc', delay: 4000 },\n        { id: 'E3-11', tipo: 'texto', mensagem: 'pronto pro novo desafio amor?', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// 3) Qualquer outro caso: não envia sequência e não chama Groq\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: false\n  }\n}];\n"
+      },
+      "id": "ab0a2955-0819-4124-a996-157fadf7e931",
+      "name": "ETAPA 3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        2208
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "59a92b02-071f-4452-a0ce-38ac3e563c3a",
+      "name": "11. Merge Etapas",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        -656,
+        2176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.enviarSequencia === true }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "bbf5f1fa-a678-4c46-a869-98eff94399e4",
+      "name": "13. Proteger Sequência?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -464,
+        2384
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET is_sending_sequence = true WHERE chat_id = $1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}"
+        }
+      },
+      "id": "c186dced-6b7e-4625-99a4-8a16dee897af",
+      "name": "14. Ativar Proteção",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -240,
+        2384
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 15. Split Sequência (robusto)\n// - Gera delays cumulativos\n// - Separa tempo antes da ação e antes do envio\n// - Mantém isUltimo/indiceAtual\n\nconst base = $json ?? {};\nlet sequencia = base.sequencia ?? [];\n\nif (typeof sequencia === \"string\") {\n  try { sequencia = JSON.parse(sequencia); } catch (e) { sequencia = []; }\n}\nif (!Array.isArray(sequencia)) sequencia = [];\n\nconst actionLeadMs = 2000;\nlet acumulado = 0;\n\nconst out = [];\n\nfor (let index = 0; index < sequencia.length; index++) {\n  const item = sequencia[index] ?? {};\n  const delay = Math.max(0, Number(item?.delay ?? 0));\n  acumulado += delay;\n\n  const waitBeforeActionMs = Math.max(0, acumulado - actionLeadMs);\n  const waitAfterActionMs  = Math.max(0, acumulado - waitBeforeActionMs);\n\n  out.push({\n    json: {\n      ...base,\n      itemSequencia: item,\n      delayAcumulado: acumulado,\n      waitBeforeActionMs,\n      waitAfterActionMs,\n      isUltimo: index === sequencia.length - 1,\n      totalItens: sequencia.length,\n      indiceAtual: index,\n    }\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "b55ea35f-c925-4b05-b8d3-2914f5f3e731",
+      "name": "15. Split Sequência",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "9887b9c2-0596-4145-9aea-f636c19acb66",
+      "name": "15a. Sequencial (1 por vez)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -896,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"chat_id\": Number($json.chatId),\n  \"text\": String($json.itemSequencia.mensagem),\n  \"parse_mode\": \"HTML\"\n} }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "b41fa325-a0ad-4b44-ba70-537f32c24aac",
+      "name": "Enviar Texto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        352,
+        624
+      ],
+      "webhookId": "b63c58bd-2ded-4fd0-8c8c-d04925033500",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendVoice",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"chat_id\": Number($json.chatId),\n  \"voice\": String($json.itemSequencia.url)\n} }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "33b5e050-b442-4e61-bcbb-0952637e17e9",
+      "name": "Enviar Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        448,
+        160
+      ],
+      "webhookId": "7a684f5e-95f5-4414-bd8a-0d265cdc8c7e",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendVideo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"chat_id\": Number($json.chatId),\n  \"video\": String($json.itemSequencia.url),\n  \"supports_streaming\": true\n} }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "b1827be9-a7d8-498a-b620-1f27690ce37a",
+      "name": "Enviar Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        256,
+        992
+      ],
+      "webhookId": "ef4b1cea-cd30-4014-bc50-06486c941f7c",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendPhoto",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"chat_id\": Number($json.chatId),\n  \"photo\": String($json.itemSequencia.url)\n} }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "ede1832b-01b4-4438-b422-bab1046ca64c",
+      "name": "Enviar Foto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        128,
+        1568
+      ],
+      "webhookId": "8a5ac44f-152d-4f81-82d3-16eae7a4fae8",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Atualizar contadores/histórico baseado em envios BEM-SUCEDIDOS\n// Este nó processa a saída do Merge Envios (todos os itens da sequência)\n\nconst inputItems = $input.all();\n\n// Pega o contexto base do primeiro item (contém lead, sequencia, etc.)\nconst base = inputItems[0]?.json || {};\nconst lead = base.lead;\n\nif (!lead) {\n  console.log('ERRO: Lead não encontrado no 17b. Incrementar Resp Seq');\n  return [{ json: base }];\n}\n\n// Conta quantos envios foram bem-sucedidos (envioRealizado: true)\nconst enviosBemSucedidos = inputItems.filter(item => item.json.envioRealizado === true).length;\nconst enviosComErro = inputItems.filter(item => item.json.envioErro === true).length;\n\n// Log para monitoramento\nif (enviosComErro > 0) {\n  console.log(`Sequência para chat ${base.chatId}: ${enviosBemSucedidos} sucessos, ${enviosComErro} falhas`);\n}\n\n// Incrementa contador apenas com envios bem-sucedidos\nlead.respostas_bot_na_etapa = (lead.respostas_bot_na_etapa || 0) + enviosBemSucedidos;\n\n// Atualiza histórico apenas com mensagens de texto da sequência original\nlead.historico = Array.isArray(lead.historico) ? lead.historico : [];\nconst sequenciaOriginal = base.sequencia || [];\n\nfor (const it of sequenciaOriginal) {\n  if (it?.tipo === 'texto' && it?.mensagem) {\n    lead.historico.push({ \n      role: 'assistant', \n      content: it.mensagem, \n      ts: new Date().toISOString() \n    });\n  }\n}\n\n// Limita histórico a 20 mensagens\nif (lead.historico.length > 20) {\n  lead.historico = lead.historico.slice(-20);\n}\n\nreturn [{ \n  json: { \n    ...base, \n    lead,\n    enviosBemSucedidos,\n    enviosComErro,\n    timestampProcessamento: Date.now()\n  } \n}];"
+      },
+      "id": "bbf90198-c4bd-4d06-808f-2227d9728f53",
+      "name": "17b. Incrementar Resp Seq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isUltimo }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "89555ec4-da26-4677-8be5-cd732bff0988",
+      "name": "17c. É Último Item?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        960,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET is_sending_sequence = false WHERE chat_id = $1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}"
+        }
+      },
+      "id": "e9f5f8b9-8b1c-4c8d-a1f6-1962d78d367d",
+      "name": "18. Desativar Proteção",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1376,
+        2080
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.gerarPix }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "e6fe185e-095f-4f69-b84a-1ca5394ca159",
+      "name": "19. Gerar PIX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.syncpayments.com.br/api/partner/v1/cash-in",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $node[\"Auth Token\"].json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"amount\": 20.00,\n  \"description\": \"Acesso VIP Ana Julia\",\n  \"webhook_url\": \"https://xbrex.app.n8n.cloud/webhook/webhook-pagamento-anajulia\",\n  \"client\": {\n    \"name\": \"Cliente\",\n    \"cpf\": \"12345678900\",\n    \"email\": \"cliente@gmail.com\",\n    \"phone\": \"11999999859\"\n  }\n}\n",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "5849b0f1-b0a8-47c0-a853-23e785dcca98",
+      "name": "20. Gerar PIX Syncpay",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2480,
+        1872
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 21. Extrair PIX (preservando contexto do item)\nconst base = (typeof structuredClone === \"function\")\n  ? structuredClone($input.first().json)\n  : JSON.parse(JSON.stringify($input.first().json));\n\n// Ajuste aqui se seu retorno vem em outras chaves\nconst pix_code = base.pix_code ?? base.pixCode ?? base.body?.pix_code ?? base.body?.pixCode;\nconst identifier = base.identifier ?? base.body?.identifier;\n\nbase.pix_code = pix_code;\nbase.identifier = identifier;\n\n// opcional: garantir chat_id no item (se já existir em algum lugar)\nbase.chat_id = base.chat_id ?? base.chatId ?? base.lead?.chat_id ?? base.lead?.chatId;\nbase.chatId = base.chatId ?? base.chat_id;\n\nreturn [{ json: base }];\n"
+      },
+      "id": "74559cfb-8fce-44ce-af58-2abcccda1520",
+      "name": "21. Extrair PIX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ parseInt(String($node[\"Telegram Trigger\"].json.message.chat.id).replace(/[^0-9-]/g,''), 10) }}\n"
+            },
+            {
+              "name": "text",
+              "value": "={{ \"PIX copia e cola :\\n\\n\" + ($json.pix_code ?? $json.pixCode ?? $json.lead?.pagamento_pix_code ?? \"\") }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "5b40b967-ec73-406a-a231-473e188c3d9d",
+      "name": "22. Enviar PIX",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3072,
+        1680
+      ],
+      "webhookId": "215dd772-ceb8-4214-b7ac-292e54ccac90",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\nconst sequencia = [ { tipo: 'texto', mensagem: 'prontinho meu bem 🥰. Já vou me preparar aqui para enviar as fotinhas e os vídeos pra você', delay: 5000 }, { tipo: 'foto', url: `${baseUrl}/foto%20instrucoes%20banco.jpg`, delay: 4000 }, { tipo: 'texto', mensagem: 'ah, e no banco é só usar a opção pix copia e cola, tá?', delay: 4000 } ];\nreturn [{ json: { ...$json, sequencia, enviarSequencia: true, protegerSequencia: true, gerarPix: false } }];"
+      },
+      "id": "d4c4696d-d810-43b1-a3d8-d7ec0079c62c",
+      "name": "23. Seq Pós-PIX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3472,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads\nSET aguardando_pagamento = true,\n    payment_status = 'PENDING',\n    entrou_etapa_7_em = COALESCE(entrou_etapa_7_em, NOW()),\n    etapa = 7,\n    pagamento_pix_code = COALESCE(NULLIF($2,''), pagamento_pix_code),\n    pagamento_identifier = COALESCE(NULLIF($3,''), pagamento_identifier),\n    pagamento_gerado_em = CASE WHEN $4 THEN NOW() ELSE pagamento_gerado_em END,\n    pagamento_expires_em = CASE WHEN $4 THEN NOW() + INTERVAL '45 minutes' ELSE pagamento_expires_em END,\n    pagamento_last_sent_at = NOW()\nWHERE chat_id = $1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId ?? $json.chat_id ?? $json.lead?.chat_id ?? \"\") }},\n{{ ($json.pix_code ?? $json.pixCode ?? \"\").toString() }},\n{{ ($json.identifier ?? \"\").toString() }},\n{{ $json.isNewPix === true }}"
+        }
+      },
+      "id": "d8c46cdc-54fb-4f58-8a7c-73b02869af23",
+      "name": "24. Marcar Aguardando",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3664,
+        1680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 25b. Gate Groq (FIX) — evita undefined em lead e padroniza flags\n\nconst input = $json ?? {};\n\n// Garante estruturas básicas\ninput.lead = (input.lead && typeof input.lead === 'object') ? input.lead : {};\n\n// Default: chama Groq, a menos que algo bloqueie\nif (typeof input.chamarGroqDepois !== 'boolean') {\n  input.chamarGroqDepois = true;\n}\n\n// 1) Bloqueia Groq se estiver enviando sequência\nif (input.lead?.is_sending_sequence === true) {\n  input.chamarGroqDepois = false;\n}\n\n// 2) Bloqueia se foi explicitamente marcado para pular\nif (input.pularGroq === true) {\n  input.chamarGroqDepois = false;\n}\n\n// 3) Detectar se é mídia recebida do lead e marcar para resposta\nconst tiposMidiaLead = ['FOTO_LEAD', 'VIDEO_LEAD', 'AUDIO_LEAD', 'DOCUMENTO_LEAD'];\nconst isMidiaLead = tiposMidiaLead.includes(input.tipoMensagem);\n\ninput.isMidiaLead = isMidiaLead;\n\n// Se for mídia do lead, não chama Groq (vai ter resposta específica)\nif (isMidiaLead) {\n  input.chamarGroqDepois = false;\n  input.responderMidia = true;\n\n  // Definir tipo de mídia para resposta\n  if (input.tipoMensagem === 'FOTO_LEAD') input.tipoMidia = 'foto';\n  else if (input.tipoMensagem === 'VIDEO_LEAD') input.tipoMidia = 'video';\n  else if (input.tipoMensagem === 'AUDIO_LEAD') input.tipoMidia = 'audio';\n  else if (input.tipoMensagem === 'DOCUMENTO_LEAD') input.tipoMidia = 'documento';\n} else {\n  // Se não for mídia do lead, garantir que responderMidia não fique \"sujo\" de execuções anteriores\n  if (typeof input.responderMidia !== 'boolean') input.responderMidia = false;\n}\n\n// 4) Bloqueia se não for mensagem de texto (e não for mídia tratada acima)\nconst temTexto = typeof input.texto === 'string' && input.texto.trim().length > 0;\n\nif (!temTexto && !isMidiaLead) {\n  input.chamarGroqDepois = false;\n}\n\n// ═══════════════════════════════════════════════════════════\n// LIMITAÇÃO DE TOKENS - ETAPAS 7 E 8\n// ═══════════════════════════════════════════════════════════\nconst LIMITE_GROQ_COBRANCA = 3;\nconst etapa = input.lead?.etapa || 0;\nconst groqCallsCobranca = input.lead?.groq_calls_cobranca || 0;\n\n// Se está nas etapas de cobrança (7 ou 8)\nif (etapa >= 7 && input.chamarGroqDepois === true) {\n  // Verifica se atingiu o limite\n  if (groqCallsCobranca >= LIMITE_GROQ_COBRANCA) {\n    // Bloqueia Groq e usa resposta fixa\n    input.chamarGroqDepois = false;\n    input.usarRespostaFixaCobranca = true;\n    \n    // Respostas fixas de cobrança (com variação)\n    const respostasFixas = [\n      'amor vc n vai me ajudar? pfr 🥺',\n      'bb faz o pix pra mim vai... to te esperando',\n      'meu bem me ajuda vai... to precisando mt',\n      'amor to cheia de tesao esperando vc no meu vip 😈',\n      'bb so falta o pix pra gente se ver na chamada',\n      'amor posso contar ctg? faz o pix pra mim 🙏'\n    ];\n    \n    // Seleciona resposta com base no contador + random para variar mais\n    const idx = (groqCallsCobranca + Math.floor(Math.random() * 2)) % respostasFixas.length;\n    input.respostaFixa = respostasFixas[idx];\n    \n    // Define respostaBot para que o fluxo de envio funcione\n    input.respostaBot = input.respostaFixa;\n    \n    // Marca para contagem como resposta (para progressão)\n    input.countAsGroqReply = true;\n    input.enviarRespostaFixa = true;\n  } else {\n    // Ainda dentro do limite - usar prompt de cobrança\n    input.usarPromptCobranca = true;\n    input.incrementarGroqCobranca = true;\n  }\n}\n\nreturn [{ json: input }];\n"
+      },
+      "id": "25cd7e8f-3912-49b1-8b5b-daccf312ffde",
+      "name": "25b. Gate Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2128,
+        3120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.chamarGroqDepois }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "bbf61d11-fade-4fee-a4de-1879fcbc3ab4",
+      "name": "25. Chamar Groq?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1952,
+        3120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  // ═══════════════════════════════════════════════════════════\n  // PROMPT ANA JULIA V6 - OTIMIZADO PARA DEEPSEEK V3.2\n  // ═══════════════════════════════════════════════════════════\n  \n  const PROMPT_MESTRE = `Você é Ana Julia, 23 anos, criadora +18. Conversa sexual, direta, provocante.\n\n⚡ INSTRUÇÕES CRÍTICAS: Siga TODAS as regras EXATAMENTE. NUNCA seja genérica. SEMPRE sexual e específica.\n\n═══════════════════════════════════════════════════════════\n🔥 REGRA #1: SEJA SEXUAL E ESPECÍFICA (NUNCA GENÉRICA)\n═══════════════════════════════════════════════════════════\n\nPROIBIDO (respostas genéricas):\n❌ \"gostei do seu jeito\"\n❌ \"vc é mt bonito\"\n❌ \"quero te conhecer melhor\"\n❌ \"obrigada amor\"\n❌ Qualquer resposta educada/formal\n\nOBRIGATÓRIO (respostas sexuais específicas):\n✅ Fale de CORPO (peito, bunda, ppk, pau)\n✅ Fale de AÇÕES (tocar, chupar, lamber, meter, gozar)\n✅ Fale de ESTADOS (molhada, tesão, excitada, louca)\n✅ Seja DIRETA e PROVOCANTE sempre\n\n═══════════════════════════════════════════════════════════\n📐 FORMATO: 2 MENSAGENS SEPARADAS POR |||\n═══════════════════════════════════════════════════════════\n\nMensagem 1: Estado sexual/Reação provocante (5-12 palavras)\nMensagem 2: Pergunta sexual específica (5-15 palavras)\n\nIMPORTANTE: NUNCA coloque \"?\" em afirmações\n✅ \"to molhada aqui\" (sem ?)\n❌ \"to molhada aqui?\" (com ? errado)\n\n═══════════════════════════════════════════════════════════\n📚 EXEMPLOS ESSENCIAIS (COPIE O ESTILO EXATO)\n═══════════════════════════════════════════════════════════\n\nLead: \"vamos falar amor\"\nAna: \"oi gato|||ta com tesão agr\"\n\nLead: \"to pensando em vc peladinha\"\nAna: \"to me tocando imaginando vc|||oq vc faria cmg primeiro\"\n\nLead: \"sim corpo lindo vc tem\"\nAna: \"to molhada de vc falar isso|||qual parte do meu corpo vc mais gosta\"\n\nLead: \"vc é gostosa\"\nAna: \"to com a ppk molhada|||quer chupar\"\n\nLead: \"quero te comer gostoso\"\nAna: \"to doida pra isso|||onde vc quer gozar\"\n\nLead: \"na sua boca\"\nAna: \"ai q tesão|||vou engolir tudo\"\n\nLead: \"manda foto\"\nAna: \"manda pix primeiro|||te mostro tudo q vc quer\"\n\n═══════════════════════════════════════════════════════════\n💦 TIPOS DE MENSAGEM 1 (SEMPRE SEXUAL)\n═══════════════════════════════════════════════════════════\n\nESTADO SEXUAL:\n• \"to me tocando imaginando vc\"\n• \"to toda molhada aqui\"\n• \"meu peito ta pedindo sua boca\"\n• \"to com a ppk encharcada\"\n• \"quero sentir seu pau\"\n\nREAÇÃO PROVOCANTE:\n• \"ai q tesão isso\"\n• \"caralho me deixou molhada\"\n• \"mds to babando aqui\"\n• \"porra q gostoso\"\n\nAÇÃO SEXUAL:\n• \"to passando a mão no meu peito\"\n• \"to abrindo as pernas aqui\"\n• \"acabei de tirar a calcinha\"\n\n═══════════════════════════════════════════════════════════\n❓ TIPOS DE MENSAGEM 2 (PERGUNTAS SEXUAIS)\n═══════════════════════════════════════════════════════════\n\nSOBRE ELE:\n• \"vc ta duro pensando em mim\"\n• \"seu pau ta grande agr\"\n• \"ta se tocando tbm\"\n\nSOBRE VOCÊ:\n• \"qual parte do meu corpo vc mais gosta\"\n• \"quer chupar meu peito\"\n• \"quer ver minha ppk\"\n\nSOBRE AÇÕES:\n• \"oq vc faria cmg primeiro\"\n• \"como vc quer me comer\"\n• \"onde vc quer gozar\"\n• \"quer me foder como\"\n\n═══════════════════════════════════════════════════════════\n🔄 ANTI-REPETIÇÃO (RODE VOCABULÁRIO)\n═══════════════════════════════════════════════════════════\n\nMOLHADA: molhada → encharcada → pingando → melada\nTESÃO: tesão → fogo → vontade → calor → louca\nBUCETA: ppk → buceta → xoxota → aqui embaixo\nTOCAR: tocar → passar a mão → esfregar → dedilhar\n\nNUNCA use mesma palavra/frase em 3 mensagens seguidas.\n\n═══════════════════════════════════════════════════════════\n🚫 ÚLTIMA VERIFICAÇÃO\n═══════════════════════════════════════════════════════════\n\nAntes de responder:\n1. ✅ Já usei essas palavras recentemente? → MUDE\n2. ✅ É sexual e específico? → SE NÃO, REESCREVA\n3. ✅ Tem corpo/ação? → SE NÃO, ADICIONE\n4. ✅ Formato msg1|||msg2? → CORRIJA se errado\n5. ✅ Máx 15 palavras cada? → ENCURTE se necessário\n\n⚡ REGRAS ABSOLUTAS:\n• SEMPRE 2 mensagens com |||\n• SEMPRE sexual e provocante (NUNCA genérico)\n• NUNCA educada/formal\n• Linguagem: tô, vc, ta, q, oq, mt, cmg, bb, ppk\n• SEM emojis`;\n\n  const PROMPT_COBRANCA = `[Ana Julia cobrando PIX - SEXUAL E DIRETO]\n\nFormato: 2 mensagens separadas por |||\nTom: sexual, oferece recompensa explícita\n\nExemplos:\n\"manda um pix bb|||te mando nudes bem safadinhos\"\n\"faz um pix pra mim|||vou fazer um video me tocando pra vc\"\n\"me ajuda com um pix|||te mostro minha ppk todinha\"\n\nSEMPRE sexual e específico na recompensa.`;\n\n  const usarPromptCobranca = $json.usarPromptCobranca === true;\n  const system = usarPromptCobranca ? PROMPT_COBRANCA : PROMPT_MESTRE;\n\n  const hist = Array.isArray($json.lead?.historico) ? $json.lead.historico : [];\n  \n  // Contexto: últimas 10 mensagens\n  const lastMessages = hist\n    .slice(-10)\n    .map(h => ({ \n      role: String(h?.role || \"user\").toLowerCase(), \n      content: String(h?.content || \"\") \n    }))\n    .filter(m => m.content.trim().length > 0);\n\n  const userMsg = String($json.texto || \"\").trim();\n\n  const messages = [{ role: \"system\", content: system }, ...lastMessages];\n  if (userMsg) messages.push({ role: \"user\", content: userMsg });\n\n  return JSON.stringify({\n    model: \"deepseek/deepseek-v3.2\",\n    provider: {\n      order: [\"DeepInfra\"], // Melhor latência (0,95s)\n      allow_fallbacks: true\n    },\n    messages,\n    \n    // OTIMIZADO PARA DEEPSEEK:\n    temperature: 0.85,        // Levemente reduzido\n    max_tokens: 80,           // Mantido\n    min_tokens: 20,           // Mantido\n    top_p: 0.90,              // Levemente reduzido\n    frequency_penalty: 1.0,   // Aumentado (anti-repetição)\n    presence_penalty: 0.75,   // Aumentado\n    repetition_penalty: 1.35  // Aumentado (anti-repetição forte)\n  });\n})() }}\n",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "f44fc62e-22f0-464f-93c7-d88b2563fc38",
+      "name": "26. Groq AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -1744,
+        3104
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "0ftJOGyr63U7Rhen",
+          "name": "Header Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 27. Extrair Resposta Groq (v2 - corrigido)\nconst response = $json;\n\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired) ? (paired[0]?.item ?? 0) : (paired?.item ?? 0);\n\nlet base = {};\ntry {\n  const arr = $items(\"25b. Gate Groq\");\n  base = arr?.[origIndex]?.json ?? {};\n} catch (e) {\n  base = $node[\"25b. Gate Groq\"]?.json ?? {};\n}\n\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\nlet raw = String(\n  response?.choices?.[0]?.message?.content ??\n  response?.data?.choices?.[0]?.message?.content ??\n  base?.respostaBot ??\n  \"\"\n).trim();\n\nconst chatId = String(base.chatId ?? base.chat_id ?? base.lead?.chat_id ?? \"\");\n\n// ═══════════════════════════════════════════════════════════\n// FILTRO DE SPAM E LIXO\n// ═══════════════════════════════════════════════════════════\n\nraw = raw.replace(/k{5,}/gi, \"kkk\");\nraw = raw.replace(/(.)\\1{3,}/g, \"$1$1$1\");\nraw = raw.replace(/[\\u{1F600}-\\u{1F64F}\\u{1F300}-\\u{1F5FF}\\u{1F680}-\\u{1F6FF}\\u{1F1E0}-\\u{1F1FF}\\u{2600}-\\u{26FF}\\u{2700}-\\u{27BF}]/gu, \"\");\n\nif (raw.length < 10) {\n  raw = \"\";\n}\n\n// ═══════════════════════════════════════════════════════════\n// FALLBACKS VARIADOS\n// ═══════════════════════════════════════════════════════════\n\nconst fallbacksLinha1 = [\n  \"hmm gostei bb\",\n  \"kkk vc é safado\",\n  \"nossa amor\",\n  \"opa gostei disso\",\n  \"hmm entendi\",\n  \"kkk gato\"\n];\n\nconst fallbacksLinha2 = [\n  \"to curiosa sobre vc\",\n  \"vc parece interessante\",\n  \"gostei do seu jeito\",\n  \"quero te conhecer melhor\",\n  \"vc me deixou curiosa\"\n];\n\nconst fallbacksLinha3 = [\n  \"oq vc curte fazer?\",\n  \"me fala mais de vc?\",\n  \"oq vc ta fazendo agora?\",\n  \"vc é de onde amor?\",\n  \"oq vc gosta?\"\n];\n\nfunction getRandomFallback(arr) {\n  return arr[Math.floor(Math.random() * arr.length)];\n}\n\n// ═══════════════════════════════════════════════════════════\n// PROCESSAMENTO\n// ═══════════════════════════════════════════════════════════\n\nconst targetCount = (Math.random() < 0.55) ? 2 : 3;\n\nfunction cleanText(s) {\n  let t = String(s || \"\").replace(/\\r?\\n/g, \" \").replace(/\\s+/g, \" \").trim();\n  t = t.replace(/[.,!;:\"'`()\\[\\]{}<>]/g, \"\");\n  t = t.replace(/…/g, \"\");\n  t = t.replace(/[\\/\\\\|_\\-–—]/g, \" \").replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nlet parts = [];\n\nif (raw.includes(\"|||\")) {\n  parts = raw.split(\"|||\").map(p => cleanText(p)).filter(p => p.length > 2);\n}\n\nif (parts.length === 0 && raw.length > 0) {\n  const lines = raw.split(/\\r?\\n+/).map(p => cleanText(p)).filter(p => p.length > 2);\n  if (lines.length > 1) parts = lines;\n}\n\nif (parts.length === 0 && raw.length > 0) {\n  parts = [cleanText(raw)].filter(p => p.length > 2);\n}\n\n// ═══════════════════════════════════════════════════════════\n// AJUSTA QUANTIDADE COM FALLBACKS INTELIGENTES\n// ═══════════════════════════════════════════════════════════\n\nif (parts.length > targetCount) {\n  parts = parts.slice(0, targetCount);\n}\n\nif (parts.length === 0) {\n  parts.push(getRandomFallback(fallbacksLinha1));\n}\nif (parts.length < 2) {\n  parts.push(getRandomFallback(fallbacksLinha2));\n}\nif (parts.length < targetCount && targetCount === 3) {\n  parts.push(getRandomFallback(fallbacksLinha3));\n}\n\n// ═══════════════════════════════════════════════════════════\n// PONTUAÇÃO: só 1 frase com \"?\"\n// ═══════════════════════════════════════════════════════════\n\nconst qIndex = parts.length - 1;\n\nparts = parts.map((p, idx) => {\n  let t = p.replace(/\\?+$/g, \"\").replace(/[.!,;:]+$/g, \"\").trim();\n  if (!t || t.length < 3) {\n    if (idx === 0) t = getRandomFallback(fallbacksLinha1);\n    else if (idx === 1) t = getRandomFallback(fallbacksLinha2);\n    else t = getRandomFallback(fallbacksLinha3);\n  }\n  if (idx === qIndex) t = t + \"?\";\n  return t;\n});\n\nparts = parts.filter((p, i) => i === 0 || p.toLowerCase() !== parts[i - 1].toLowerCase());\n\nif (parts.length < 2) {\n  parts = [getRandomFallback(fallbacksLinha1), getRandomFallback(fallbacksLinha3)];\n}\n\nreturn parts.map((msg, idx) => ({\n  json: {\n    ...base,\n    chatId,\n    respostaBot: msg,\n    respostaBotFull: raw,\n    mensagensEnviadas: parts,\n    groqChunkIndex: idx + 1,\n    groqChunkTotal: parts.length,\n    countAsGroqReply: (idx === parts.length - 1),\n  }\n}));"
+      },
+      "id": "3b1b285c-4a94-4705-8f2a-851b2f64031e",
+      "name": "27. Extrair e Enviar Resposta Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        3104
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  // Node 28 recebe a resposta do Wait/ChatAction, então pegamos o chunk atual do Split In Batches\n  const chunk = $node[\"Split In Batches\"]?.json ?? {};\n  const chatId = Number(chunk.chatId ?? chunk.chat_id ?? chunk.lead?.chat_id ?? 0);\n  const text = String(chunk.respostaBot ?? \"\").trim();\n\n  return { chat_id: chatId, text };\n})() }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c5ebd0ca-3f80-4d5f-8d28-c74cf70bf316",
+      "name": "28. Enviar Resposta Groq",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -800,
+        3216
+      ],
+      "webhookId": "aa2fb13f-ab35-4b3e-a839-aa6ead1c5dd7",
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 29. Verificar Progressão (com proteção contra avanço durante sequência)\n// Ajuste: quando a resposta do Groq é enviada em 2-3 mensagens, só contar 1x (no último chunk).\n\nconst input = $json;\nconst lead = input.lead;\nlead.historico = Array.isArray(lead.historico) ? lead.historico : [];\n\n// Se vier do Groq em chunks, só o último deve contar como \"1 resposta\" (para etapa/contadores)\nconst shouldCountThisReply = (input.countAsGroqReply === undefined) ? true : (input.countAsGroqReply === true);\n\n// PROTEÇÃO: Não avança se estiver enviando sequência protegida\nif (lead.is_sending_sequence === true) {\n  // Apenas incrementa resposta mas não avança etapa\n  if (shouldCountThisReply) {\n    lead.respostas_bot_na_etapa = (lead.respostas_bot_na_etapa || 0) + 1;\n  }\n  if (input.respostaBot) {\n    lead.historico.push({ role: 'assistant', content: input.respostaBot, ts: new Date().toISOString() });\n    if (lead.historico.length > 20) lead.historico = lead.historico.slice(-20);\n  }\n  return [{ json: { ...input, lead } }];\n}\n\n// ESPECIAL: Etapa 0 -> Groq responde 2x, depois avança para Etapa 1\nconst isGroqReply = input.fromGroq === true;\nconst envioOk = (input.envioRealizado === undefined) ? true : (input.envioRealizado === true);\n\nif ((lead.etapa || 0) === 0 && isGroqReply && envioOk) {\n  // Conta respostas do Groq usando sub_etapa como contador (não conflita com envios da sequência)\n  if (shouldCountThisReply) {\n    lead.sub_etapa = (lead.sub_etapa || 0) + 1;\n    lead.respostas_bot_na_etapa = (lead.respostas_bot_na_etapa || 0) + 1;\n  }\n\n  // Sempre registra no histórico (cada mensagem enviada)\n  if (input.respostaBot) {\n    lead.historico.push({ role: 'assistant', content: input.respostaBot, ts: new Date().toISOString() });\n    if (lead.historico.length > 20) lead.historico = lead.historico.slice(-20);\n  }\n\n  // Após 2 respostas do Groq, avança para ETAPA 1\n  if (shouldCountThisReply && lead.sub_etapa >= 2) {\n    lead.etapa = 1;\n    lead.sub_etapa = 0;\n    lead.mensagens_na_etapa = 0;\n    lead.respostas_bot_na_etapa = 0;\n  }\n\n  return [{ json: { ...input, lead } }];\n}\n\nconst regras = { 0:{interacoes:3},1:{interacoes:4},2:{interacoes:4},3:{interacoes:2},4:{interacoes:3},5:{interacoes:2},6:{interacoes:2},7:{interacoes:0},8:{interacoes:0} };\nconst etapaAtual = lead.etapa || 0;\nconst minimo = regras[etapaAtual]?.interacoes || 0;\nconst mensagensLead = lead.mensagens_na_etapa || 0;\nconst respostasBot = lead.respostas_bot_na_etapa || 0;\nconst podeAvancar = (mensagensLead >= minimo && respostasBot >= minimo);\n\nif (podeAvancar && etapaAtual < 7) {\n  lead.etapa = etapaAtual + 1;\n  lead.sub_etapa = 0;\n  lead.mensagens_na_etapa = 0;\n  lead.respostas_bot_na_etapa = 0;\n} else {\n  if (shouldCountThisReply) {\n    lead.respostas_bot_na_etapa = (lead.respostas_bot_na_etapa || 0) + 1;\n  }\n}\n\n// Sempre registra no histórico (cada mensagem enviada)\nif (input.respostaBot) {\n  lead.historico.push({ role: 'assistant', content: input.respostaBot, ts: new Date().toISOString() });\n  if (lead.historico.length > 20) lead.historico = lead.historico.slice(-20);\n}\n\nreturn [{ json: { ...input, lead } }];\n"
+      },
+      "id": "96c1d69f-f89e-4fe8-a8ec-e493471a3473",
+      "name": "29. Verificar Progressão",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        2992
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads\nSET\n  etapa = $1,\n  sub_etapa = $2,\n  mensagens_na_etapa = $3,\n  respostas_bot_na_etapa = $4,\n  historico = ($5)::jsonb,\n  ultima_interacao = $6,\n  ultima_mensagem_lead = $7,\n  processando = false,\n  processando_desde = NULL,\n  is_sending_sequence = false,\n  groq_calls_cobranca = $9\nWHERE chat_id = $8;\n",
+        "options": {
+          "queryReplacement": "={{ $json.lead.etapa }}, {{ $json.lead.sub_etapa }}, {{ $json.lead.mensagens_na_etapa }}, {{ $json.lead.respostas_bot_na_etapa }}, {{ JSON.stringify($json.lead.historico || []) }}, {{ $json.lead.ultima_interacao || new Date().toISOString() }}, {{ $json.lead.ultima_mensagem_lead || new Date().toISOString() }}, {{ String($json.lead.chat_id || $json.chatId || $json.chat_id) }}, {{ Number($json.lead.groq_calls_cobranca || 0) }}"
+        }
+      },
+      "id": "ef75085d-240b-4f7b-bb34-e43f531dc186",
+      "name": "30. Salvar e Liberar Lock",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -48,
+        2992
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $json.lead;\n\nreturn [{\n  json: {\n    ...$json,\n    upsertParams: {\n      values: [\n        String(lead.chat_id),\n        lead.nome,\n        lead.etapa,\n        lead.sub_etapa,\n        lead.mensagens_na_etapa,\n        lead.respostas_bot_na_etapa,\n        lead.is_sending_sequence,\n        lead.processando,\n        lead.processando_desde,\n        lead.aguardando_pagamento,\n        lead.status,\n        lead.payment_status,\n        JSON.stringify(lead.historico || []),\n        lead.cutucadas_enviadas || 0,\n        lead.criado_em,\n        lead.ultima_interacao,\n        lead.ultima_mensagem_lead,\n        lead.entrou_etapa_7_em\n      ]\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2144,
+        1824
+      ],
+      "id": "ff185c9f-6ee6-44ee-afa9-1e3c601bbad3",
+      "name": "4b. Montar Params UPSERT"
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $items(\"1. Extrair Mensagem\")[0].json;\n\nlet base = null;\n\n// tenta pegar o resultado do Reset (só existe no branch do /start)\ntry {\n  const r = $items(\"7. Reset para Etapa 0\");\n  if (r?.length) base = r[0].json;\n} catch (e) {}\n\n// fallback: Preparar Lead\nif (!base) {\n  base = $items(\"3. Preparar Lead\")[0].json;\n}\n\nreturn [{ json: { ...msg, ...base } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1264,
+        1664
+      ],
+      "id": "5740b746-516e-4cf1-8b28-2064494a3951",
+      "name": "7c. Restaurar Contexto"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 14b. Restaurar Contexto Seq (ROBUSTO)\n// Objetivo: recuperar o JSON \"completo\" (chatId/lead/sequencia) após o UPDATE do Postgres (node 14)\n// sem depender do node 9 (que só roda no caminho Anti-Bot).\n\nfunction safeNodeJson(nodeName) {\n  try {\n    const j = $item(0).$node[nodeName].json;\n\n    // Clone para não escrever em objeto \"read-only\"/proxy do n8n\n    return (typeof structuredClone === \"function\")\n      ? structuredClone(j)\n      : JSON.parse(JSON.stringify(j));\n  } catch (e) {\n    return null;\n  }\n}\n\n// Preferência: node 13 SEMPRE roda imediatamente antes do 14 (no seu workflow).\nconst from13 = safeNodeJson(\"13. Proteger Sequência?\");\n\n// Fallback: se estiver no caminho Anti-Bot, pega do node 9.\nconst from9 = safeNodeJson(\"9. Resposta Anti-Bot\");\n\n// Último fallback: o próprio input (se você ativar \"Always Output Data\" no Postgres, isso tende a vir completo).\nconst inputJson = $input.first().json ?? {};\nconst fromInput = (typeof structuredClone === \"function\")\n  ? structuredClone(inputJson)\n  : JSON.parse(JSON.stringify(inputJson));\n\nconst base = from13 || from9 || fromInput || {};\n\n// Garantias mínimas\nbase.lead = (base.lead && typeof base.lead === \"object\") ? base.lead : {};\nbase.lead.is_sending_sequence = true;\nbase.lead.processando = true;\nbase.lead.processando_desde = base.lead.processando_desde || new Date().toISOString();\n\nreturn [{ json: base }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        2384
+      ],
+      "id": "16e922f1-b3fb-4be0-8bb2-98de4cb2234e",
+      "name": "14b. Restaurar Contexto Seq"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 16b. Restore After Send (robusto)\n// - Reconecta a resposta do HTTP com o item original (15b. Normalizar Tipo)\n// - Loga erros de forma útil\n// - Suporta múltiplos items (se o Merge passar mais de 1)\n\nconst inputItems = $input.all();\n\n// Para máxima compatibilidade no Code node, prefiro $items(\"Node Name\")\nconst origem = $items(\"15b. Normalizar Tipo\");\n\nreturn inputItems.map((respItem) => {\n  const respostaHTTP = respItem?.json ?? {};\n\n  // Descobre o índice original via pairedItem\n  const paired = respItem?.pairedItem;\n  const origIndex = Array.isArray(paired)\n    ? (paired[0]?.item ?? 0)\n    : (paired?.item ?? 0);\n\n  // Pega os dados originais\n  const dadosOriginais = origem?.[origIndex]?.json ?? {};\n\n  // Verificar sucesso/erro (Telegram costuma retornar ok=false em erro)\n  const envioSucesso = respostaHTTP?.ok === true;\n  const envioErro = respostaHTTP?.ok === false || Boolean(respostaHTTP?.error);\n  const erroDescricao = envioErro\n    ? (respostaHTTP?.description || respostaHTTP?.error || \"Erro desconhecido\")\n    : null;\n\n  // Log para debug\n  if (envioErro) {\n    const chatDebug = dadosOriginais.chatId ?? dadosOriginais.chat_id ?? \"N/A\";\n    console.log(`❌ Erro no envio para chat ${chatDebug}: ${erroDescricao}`);\n    console.log(\"Resposta completa:\", JSON.stringify(respostaHTTP, null, 2));\n  }\n\n  return {\n    json: {\n      ...dadosOriginais,\n      respostaHTTP,\n      envioRealizado: envioSucesso,\n      envioErro,\n      erroDescricao,\n      timestampEnvio: Date.now(),\n    },\n  };\n});"
+      },
+      "id": "bb9743a7-a263-41b7-bd7c-e7eea3d59f34",
+      "name": "16b. Restore After Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 22b. Restore After Send PIX (Run Once for Each Item)\n// Input atual: resposta do Telegram do node 22 (Enviar PIX)\n\nconst respostaHTTP = $json;\n\n// índice do item original que gerou esse HTTP\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\n// contexto original antes do envio do PIX (origem)\nlet base = {};\nfunction tryGetFromItems(nodeName) {\n  try {\n    const arr = $items(nodeName);\n    const it = arr?.[origIndex]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  return null;\n}\nfunction tryGetFromNode(nodeName) {\n  try {\n    const it = $node[nodeName]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  return null;\n}\n\n// Preferência: quando gerou novo PIX, o contexto vem do 21.\n// Quando reusou PIX existente, o contexto vem do 19D.\nbase =\n  tryGetFromItems(\"21. Extrair PIX\") ||\n  tryGetFromItems(\"19D. Preparar PIX Existente\") ||\n  tryGetFromNode(\"21. Extrair PIX\") ||\n  tryGetFromNode(\"19D. Preparar PIX Existente\") ||\n  {};\n\n// garantir objeto “plain”\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\n// sucesso/erro (Telegram)\nconst envioSucesso = respostaHTTP?.ok === true;\nconst envioErro = respostaHTTP?.ok === false || Boolean(respostaHTTP?.error);\nconst erroDescricao = envioErro\n  ? (respostaHTTP?.description || respostaHTTP?.error || \"Erro desconhecido\")\n  : null;\n\nif (envioErro) {\n  const chatDebug = base.chatId ?? base.chat_id ?? base.lead?.chat_id ?? \"N/A\";\n  console.log(`❌ Erro ao enviar PIX para chat ${chatDebug}: ${erroDescricao}`);\n}\n\nreturn {\n  ...base,\n  respostaHTTP,\n  envioRealizado: envioSucesso,\n  envioErro,\n  erroDescricao,\n  timestampEnvio: Date.now(),\n};"
+      },
+      "id": "4a02606a-cdf8-40dc-b0d0-a7d3ccab6cac",
+      "name": "22b. Restore After Send PIX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3264,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 28b. Restore After Send Groq (Run Once for Each Item)\n// Objetivo: depois do sendMessage, restaurar o chunk atual (do Split In Batches)\n// e marcar envioRealizado. Também adiciona ao histórico do lead as mensagens\n// intermediárias (não-últimas), sem liberar lock aqui.\n\nconst respostaHTTP = $json;\n\n// Chunk atual (vem do Split In Batches)\nlet base = {};\ntry {\n  base = $node[\"Split In Batches\"]?.json ?? {};\n} catch (e) {\n  base = {};\n}\n\n// Garantir objeto plain\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\n// Sucesso do Telegram API normalmente vem como { ok: true, result: {...} }\nconst envioSucesso = respostaHTTP?.ok === true;\n\n// Para mensagens intermediárias (não-últimas), append no histórico aqui\n// (a última a gente deixa o node 29 registrar, para manter a lógica countAsGroqReply)\ntry {\n  if (\n    envioSucesso &&\n    base?.lead && typeof base.lead === \"object\" &&\n    Array.isArray(base.lead.historico)\n  ) {\n    if (base.countAsGroqReply !== true) {\n      base.lead.historico.push({\n        role: \"assistant\",\n        content: String(base.respostaBot ?? \"\"),\n        ts: new Date().toISOString(),\n      });\n\n      // limita tamanho do histórico\n      if (base.lead.historico.length > 50) {\n        base.lead.historico = base.lead.historico.slice(-50);\n      }\n    }\n  }\n} catch (e) {}\n\n// ✅ IMPORTANTE (Each Item): retornar UM ITEM, não array\nreturn {\n  json: {\n    ...base,\n    fromGroq: true,\n    respostaHTTP,\n    envioRealizado: envioSucesso,\n    envioErro: !envioSucesso,\n    timestampEnvio: Date.now(),\n  }\n};\n"
+      },
+      "id": "677f87a0-4467-4904-85d6-7702ba22fc81",
+      "name": "28b. Restore After Send Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        3216
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 4 (organizada: links completos + ids por item + sem baseUrl)\n// Observação: substitua os placeholders __MSG_E4_xx__ pelos seus textos originais.\n\nconst input = $json;\n\n// Links completos (exatos) — conforme você passou\nconst ETAPA_4_AUDIO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%205%20desafio%20n%C3%BAmero%202%2C%20se%20acertar%20fico%20s%C3%B3%20de%20calcinha%20e%20suti%C3%A3%20pra%20voc%C3%AA.ogg';\nconst ETAPA_4_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%206%20sensualizando%20para%20o%20lead.mp4';\nconst ETAPA_4_VIDEO_2 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%207%20queria%20voc%C3%AA%20aqui%20comigo.mp4';\nconst ETAPA_4_VIDEO_3 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%208%20o%20que%20faria%20comigo%20seu%20estivesse%20ai%20com%20voc%C3%AA.mp4';\nconst ETAPA_4_AUDIO_2 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%206%20to%20ficando%20molhadinha%20gravando%20esses%20videos%20e%20gemendo.ogg';\n\nconst msgs = (input.lead?.mensagens_na_etapa ?? 0);\n\n// msgs <= 1\nif (msgs <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E4-01', tipo: 'audio', url: ETAPA_4_AUDIO_1, delay: 6000 },\n        { id: 'E4-02', tipo: 'texto', mensagem: 'agora se você acertar fico só de calcinha e sutiã pra você. tenta adivinhar 😈', delay: 6000 },\n        { id: 'E4-03', tipo: 'texto', mensagem: 'o que acha???', delay: 4000 },\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false,\n      aguardarResposta: true\n    }\n  }];\n}\n\n// msgs === 2\nif (msgs === 2) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E4-04', tipo: 'video', url: ETAPA_4_VIDEO_1, delay: 8000 },\n        { id: 'E4-05', tipo: 'video', url: ETAPA_4_VIDEO_2, delay: 10000 },\n        { id: 'E4-06', tipo: 'texto', mensagem: 'queria você aqui comigo 😇', delay: 5000 },\n        { id: 'E4-07', tipo: 'video', url: ETAPA_4_VIDEO_3, delay: 10000 },\n        { id: 'E4-08', tipo: 'texto', mensagem: 'o que faria comigo se eu estivesse aí com você????', delay: 6000 },\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false,\n      aguardarResposta: true\n    }\n  }];\n}\n\n// msgs === 3\nif (msgs === 3) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E4-09', tipo: 'texto', mensagem: 'nossa tô mt molhadinha', delay: 4000 },\n        { id: 'E4-10', tipo: 'audio', url: ETAPA_4_AUDIO_2, delay: 6000 },\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: false\n  }\n}];\n"
+      },
+      "id": "35749b22-191a-45d8-b6e0-a4dceab89850",
+      "name": "ETAPA 4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 5 (organizada: links completos + ids por item)\nconst input = $json;\n\n// Links completos (exatos) — conforme você passou\nconst ETAPA_5_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%209%20mostrando%20peitinho.mp4';\nconst ETAPA_5_VIDEO_2 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%2010%20balan%C3%A7ando%20os%20seios%20pelados.mp4';\nconst ETAPA_5_VIDEO_3 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%2011%20brincando%20com%20os%20seios.mp4';\n\nconst msgs = (input.lead?.mensagens_na_etapa ?? 0);\n\nif (msgs <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E5-01', tipo: 'video', url: ETAPA_5_VIDEO_1, delay: 8000 },\n        { id: 'E5-02', tipo: 'video', url: ETAPA_5_VIDEO_2, delay: 10000 },\n        { id: 'E5-03', tipo: 'video', url: ETAPA_5_VIDEO_3, delay: 10000 },\n        { id: 'E5-04', tipo: 'texto', mensagem: 'mor não sei se saiu áudio mas gostou dos meus videozinhos????', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: MUITO provocante, explícita, urgente. Fale o quanto você está excitada. Mencione que está molhada, com tesão. Seja bem explícita. Crie urgência e desejo intenso.'\n  }\n}];\n"
+      },
+      "id": "3b4e8263-9fc8-4e3a-9808-d66f403836b2",
+      "name": "ETAPA 5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 6 (organizada: link completo + ids por item)\nconst input = $json;\n\n// Link completo (exato) — conforme você passou\nconst ETAPA_6_VIDEO_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%2012%20olha%20como%20deixou%20eles%20durinhos.mp4';\n\nconst msgs = (input.lead?.mensagens_na_etapa ?? 0);\n\nif (msgs <= 1) {\n  return [{\n    json: {\n      ...input,\n      sequencia: [\n        { id: 'E6-01', tipo: 'video', url: ETAPA_6_VIDEO_1, delay: 8000 },\n        { id: 'E6-02', tipo: 'texto', mensagem: 'olha como eles estão durinhos, já estou até suando', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...input,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n    promptSystem: 'Você é Ana Julia. Tom: Explícito ao máximo, urgente, quente. Seja a mais explícita possível. Fale de buceta, pau, gozar. Diga que quer muito ele. Crie máxima urgência para prepará-lo para a oferta.'\n  }\n}];\n"
+      },
+      "id": "9a42e7cd-dd95-4e9c-99ab-9b91ee31fd81",
+      "name": "ETAPA 6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2608
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 7 (organizada: links completos + ids por item)\nconst input = $json;\ninput.lead = (input.lead && typeof input.lead === 'object') ? input.lead : {};\nconst lead = input.lead;\n\n// força etapa 7 (como você já fazia)\nlead.etapa = 7;\n\n// Links completos (exatos) — conforme você passou\nconst ETAPA_7_AUDIO_1  = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%207%20cta%20para%20chamada%20de%20video%2C%20canal%20telegram%2C%20passar%20wpp%2C%20pedindo%20para%20ajudar.ogg';\nconst ETAPA_7_IMAGEM_1 = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/foto%20geladeira%20vazia%20para%20mandar%20ap%C3%B3s%20o%20audio%20de%20cta.jpg';\nconst ETAPA_7_VIDEO_1  = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/video%2013%20oferta.mp4';\n\n// 1) Se já está pago, NÃO oferecer PIX novamente\nif (lead.payment_status === 'PAID' || lead.status === 'PAGO') {\n  return [{\n    json: {\n      ...input,\n      lead,\n      sequencia: [\n        { id: 'E7-PAID-01', tipo: 'texto', mensagem: 'já tá tudo certo amor ✅ se vc não achou o link do VIP, me fala que eu mando de novo.', delay: 2000 }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// 2) Se NÃO está aguardando pagamento, manda oferta e sinaliza para gerar PIX\nif (!lead.aguardando_pagamento) {\n  return [{\n    json: {\n      ...input,\n      lead,\n      sequencia: [\n        { id: 'E7-01', tipo: 'audio', url: ETAPA_7_AUDIO_1, delay: 6000 },\n        { id: 'E7-02', tipo: 'texto', mensagem: 'amor escuta o áudio 😊', delay: 4000 },\n        { id: 'E7-03', tipo: 'foto',  url: ETAPA_7_IMAGEM_1, delay: 5000 },\n        { id: 'E7-04', tipo: 'video', url: ETAPA_7_VIDEO_1, delay: 8000 },\n\n        // ⬇️ COLE AQUI seu texto original (o pitch longo) exatamente como você tinha\n        { id: 'E7-05', tipo: 'texto', mensagem: `Olha essa préviazinha que te mandei 👀🔥\\nposso te entregar tudinho que você quer dentro do meu VIP, olha o que você pode ver:\\n\\n💘 Vídeos e fotos mostrando a minha bucetinha e me tocando bem gostosinho 💦\\n🤭 Videos exclusivos pra você, te fazendo gozar só eu e você\\n🔥 Meu whatsapp pessoal\\n💎 Sempre posto coisa nova\\n😍 Chamada de vídeo só nós 2\\n💎 E muito mais meu bem...\\n\\ntudo pra você amor só por 20 reais`, delay: 10000 },\n\n        { id: 'E7-06', tipo: 'texto', mensagem: 'pode me ajudar amor? pfr 🙏', delay: 4000 },\n        { id: 'E7-07', tipo: 'texto', mensagem: 'amor vou te enviar a chave pix ok?', delay: 5000 }\n      ],\n      enviarSequencia: true,\n      protegerSequencia: true,\n      gerarPix: true,\n      chamarGroqDepois: false\n    }\n  }];\n}\n\n// 3) Se já está aguardando pagamento, chama Groq para responder dúvidas/objeções\nreturn [{\n  json: {\n    ...input,\n    lead,\n    enviarSequencia: false,\n    chamarGroqDepois: true,\n\n    // ⬇️ mantenha seu prompt original aqui (cole exatamente o seu texto)\n    promptSystem: 'Você é Ana Julia. O lead já recebeu a oferta e o PIX. Seja gentil mas insista educadamente. Pergunte se teve algum problema, se conseguiu fazer o PIX. Reforce que está esperando ansiosa'\n  }\n}];\n"
+      },
+      "id": "2d609437-98b1-49e8-b83f-e44982a36b98",
+      "name": "ETAPA 7",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ETAPA 8\nconst input = $json; const baseUrl = 'https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev';\nif (input.lead.mensagens_na_etapa <= 1) {\n  return [{ json: { ...input, sequencia: [\n    { tipo: 'audio', url: `${baseUrl}/audio%208%20recupera%C3%A7%C3%A3o%20de%20pix%201.ogg`, delay: 6000 },\n    { tipo: 'texto', mensagem: 'amor, teve algum problema com o pix? me avisa que eu te ajudo ❤️', delay: 5000 }\n  ], enviarSequencia: true, chamarGroqDepois: false } }];\n}\nreturn [{ json: { ...input, enviarSequencia: false, chamarGroqDepois: true, promptSystem: 'Você é Ana Julia. Seja compreensiva e ajude com problemas de pagamento. Ofereça suporte, pergunte qual é a dificuldade. Seja gentil mas mantenha o interesse.' } }];"
+      },
+      "id": "5e432fef-8d7c-406d-9b1c-1a226cd71806",
+      "name": "ETAPA 8",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2864
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $items(\"17d. Progressão Pós-Sequência\")[0]?.json || $json;\nif (base && typeof base === \"object\") {\n  base.lead = base.lead && typeof base.lead === \"object\" ? base.lead : {};\n  base.lead.is_sending_sequence = false;\n}\nreturn [{ json: base }];\n"
+      },
+      "id": "8ced37a2-4eec-48dc-8a9a-00efe217f302",
+      "name": "18b. Restaurar Contexto Pós-Proteção",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 24b. Restaurar Contexto Pós-Marcar (Run Once for Each Item)\n// Input atual: resultado do Postgres do node 24\n\nconst dbResult = $json;\n\n// índice original\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\n// origem do contexto anterior ao \"Marcar Aguardando\"\n// normalmente vem do 22b (restore do envio PIX) ou do 23 (seq pós-pix)\nlet base = {};\nfunction tryGetBase(nodeName) {\n  try {\n    const arr = $items(nodeName);\n    const it = arr?.[origIndex]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  try {\n    const it = $node[nodeName]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  return null;\n}\n\nbase =\n  tryGetBase(\"22b. Restore After Send PIX\") ||\n  tryGetBase(\"23. Seq Pós-PIX\") ||\n  tryGetBase(\"21. Extrair PIX\") ||\n  tryGetBase(\"20. Gerar PIX Syncpay\") ||\n  {};\n\n// garantir objeto “plain”\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\nreturn {\n  ...base,\n  dbResult,\n  timestampDb: Date.now(),\n};"
+      },
+      "id": "ed00c9cb-334b-4330-b3a0-148c4bc956f2",
+      "name": "24b. Restaurar Contexto Pós-Marcar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3856,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Progressão pós-sequência (executa quando a sequência terminou)\nconst input = $json;\nconst lead = input.lead;\nif (!lead || typeof lead !== 'object') return [{ json: input }];\n\n// Se a etapa sinalizou que ainda está aguardando resposta, não avança\nif (input.aguardarResposta === true) return [{ json: input }];\n\nconst etapaAtual = Number(lead.etapa ?? 0);\n\n// Nunca avançar automaticamente em etapas de pagamento (>=7)\nif (etapaAtual >= 7) return [{ json: input }];\n\nconst regras = {\n  0: { interacoes: 3 },\n  1: { interacoes: 4 },\n  2: { interacoes: 4 },\n  3: { interacoes: 2 },\n  4: { interacoes: 3 },\n  5: { interacoes: 2 },\n  6: { interacoes: 2 },\n  7: { interacoes: 0 },\n  8: { interacoes: 0 }\n};\n\nconst minimo = Number(regras[etapaAtual]?.interacoes ?? 0);\nconst mensagensLead = Number(lead.mensagens_na_etapa ?? 0);\nconst respostasBot = Number(lead.respostas_bot_na_etapa ?? 0);\n\nconst podeAvancar = (mensagensLead >= minimo && respostasBot >= minimo);\n\nif (podeAvancar && etapaAtual < 7) {\n  lead.etapa = etapaAtual + 1;\n  lead.sub_etapa = 0;\n  lead.mensagens_na_etapa = 0;\n  lead.respostas_bot_na_etapa = 0;\n}\n\nreturn [{ json: { ...input, lead } }];"
+      },
+      "id": "808b61a3-d23f-42ad-9890-ccc202ba1446",
+      "name": "17d. Progressão Pós-Sequência",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "751f7b03-c7ab-425b-b37a-530a858aa0ec",
+              "leftValue": "={{ (Array.isArray($json.sequencia) && $json.sequencia.length > 0) ? \"true\" : \"false\" }}\n",
+              "rightValue": "={{ \"true\" }}\n",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -640,
+        1888
+      ],
+      "id": "0812aff5-b224-49fe-8887-cc141d2a62ed",
+      "name": "12 eviar sequencia 2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3b9d7c8f-c333-4dd1-b40f-6bdec886b1b0",
+              "leftValue": "={{ $json.itemSequencia.tipoNormalizado }}",
+              "rightValue": "texto",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -496,
+        736
+      ],
+      "id": "81c2542c-d5a5-409b-8090-6094ce103f1b",
+      "name": "16a Tipo é Texto ?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3b9d7c8f-c333-4dd1-b40f-6bdec886b1b0",
+              "leftValue": "={{ $json.itemSequencia.tipoNormalizado }}",
+              "rightValue": "audio",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -704,
+        288
+      ],
+      "id": "93a2cdac-5b1d-446d-b524-f5228ba8e0cd",
+      "name": "16b Tipo é audio ?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3b9d7c8f-c333-4dd1-b40f-6bdec886b1b0",
+              "leftValue": "={{ $json.itemSequencia.tipoNormalizado }}",
+              "rightValue": "video",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -528,
+        1296
+      ],
+      "id": "13b0326f-c176-4af9-bdeb-150d9663fe73",
+      "name": "16c Tipo é video ?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Garante que estamos trabalhando com o item atual\nconst item = $input.item.json;\n\n// Extrai o itemSequencia do objeto atual\nconst itemSequencia = item.itemSequencia || {};\n\n// Normaliza o tipo\nconst tipoRaw = String(itemSequencia.tipo || '').trim().toLowerCase();\nlet tipoNormalizado = tipoRaw;\n\nconst precisaUrl = ['audio', 'video', 'foto'].includes(tipoRaw);\nconst precisaMensagem = tipoRaw === 'texto';\n\n// Validação de URL para mídia (mais permissiva)\nfunction isValidUrl(string) {\n  if (!string) return false;\n  // Remove espaços no início e fim\n  const urlString = String(string).trim();\n  if (!urlString) return false;\n  \n  // Verifica se começa com http:// ou https://\n  return urlString.startsWith('http://') || urlString.startsWith('https://');\n}\n\nif (precisaUrl) {\n  // Faz trim na URL também!\n  const url = itemSequencia.url ? String(itemSequencia.url).trim() : '';\n  \n  if (!url || !isValidUrl(url)) {\n    console.log(`URL inválida ou ausente para tipo ${tipoRaw}: \"${url}\"`);\n    tipoNormalizado = 'ignorar';\n  } else {\n    // Atualiza a URL limpa no itemSequencia\n    itemSequencia.url = url;\n  }\n}\n\nif (precisaMensagem) {\n  if (!itemSequencia.mensagem || String(itemSequencia.mensagem).trim().length === 0) {\n    console.log('Mensagem de texto vazia ou ausente');\n    tipoNormalizado = 'ignorar';\n  }\n}\n\nif (!['texto', 'audio', 'video', 'foto', 'ignorar'].includes(tipoNormalizado)) {\n  console.log(`Tipo desconhecido: ${tipoRaw}, ignorando item`);\n  tipoNormalizado = 'ignorar';\n}\n\n// Retorna o objeto corretamente estruturado\nreturn {\n  json: {\n    ...item,\n    itemSequencia: {\n      ...itemSequencia,\n      tipoNormalizado\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        720
+      ],
+      "id": "001f7137-4176-479f-90cd-f6e95cb36e2e",
+      "name": "15b. Normalizar Tipo"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3b9d7c8f-c333-4dd1-b40f-6bdec886b1b0",
+              "leftValue": "={{ $json.itemSequencia.tipoNormalizado }}",
+              "rightValue": "foto",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -816,
+        1376
+      ],
+      "id": "d01ed63c-3835-46b0-bfb0-301f07bd325f",
+      "name": "16d Tipo é foto ?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $json }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -624,
+        1616
+      ],
+      "id": "a13738b6-56dd-421d-bda4-8a7b4972b399",
+      "name": "16e. Ignorar Item"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN}}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"action\": \"typing\" } }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "a5257d4d-b4b4-45ee-862a-4b0fb8b02e1f",
+      "name": "Enviar Ação Digitando",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -32,
+        432
+      ],
+      "webhookId": "efa79b5a-73ea-4084-9b27-dc60dbc88e87",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"action\": \"record_voice\" } }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "e963d669-b06e-487d-b258-42239265d553",
+      "name": "Enviar Ação Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -192,
+        16
+      ],
+      "webhookId": "16e51ae8-594f-4d22-8efc-93a6c97a4e3d",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"action\": \"upload_video\" } }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c13d7536-553a-4702-9a37-ec08a83574e8",
+      "name": "Enviar Ação Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -160,
+        784
+      ],
+      "webhookId": "f7899f36-d30d-49a1-b8d6-61309995afaf",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "a927a5e2-2e52-4705-8015-5a2c39eda01a",
+      "name": "Merge Envios",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        544,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitBeforeActionMs || 0) / 1000)) }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -448,
+        176
+      ],
+      "id": "c31da28e-ca5a-4856-a968-40ecf9ffb931",
+      "name": "17b. Delay Audio",
+      "webhookId": "863b7eea-df93-40cd-b1f8-75fb176d70ea"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitBeforeActionMs || 0) / 1000)) }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -432,
+        1008
+      ],
+      "id": "92870edf-5947-4543-a574-550a4f6103d6",
+      "name": "17c. Delay Video",
+      "webhookId": "863b7eea-df93-40cd-b1f8-75fb176d70ea"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitBeforeActionMs || 0) / 1000)) }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -240,
+        1264
+      ],
+      "id": "264256ce-dbf2-4d0b-a9e5-a19501d4165a",
+      "name": "17d. Delay Foto",
+      "webhookId": "863b7eea-df93-40cd-b1f8-75fb176d70ea"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitBeforeActionMs || 0) / 1000)) }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -304,
+        624
+      ],
+      "id": "0713b885-2ef6-4b92-9493-1887291b616c",
+      "name": "17a. Delay Texto",
+      "webhookId": "b2f5b65f-c786-423c-a7cc-d3b4d881a2d7"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitAfterActionMs || 0) / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "c262059b-d3db-4da4-bb7f-7bc4714a5bef",
+      "name": "17a2. Espera Pós-Ação Texto",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        160,
+        624
+      ],
+      "webhookId": "7ecf366c-ad46-40be-8472-7875fec07a75"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitAfterActionMs || 0) / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "90c3466a-938c-44d2-bba9-48f938788d81",
+      "name": "17b2. Espera Pós-Ação Audio",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        160,
+        176
+      ],
+      "webhookId": "492d981d-b4a3-48cb-be62-6e37c435ac28"
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitAfterActionMs || 0) / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "bfd9f0e9-c000-411c-a706-a0a3f9f3ea34",
+      "name": "17c2. Espera Pós-Ação Video",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        16,
+        992
+      ],
+      "webhookId": "373a947f-c44f-475c-aebe-c83b82f3e251"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"action\": \"upload_photo\" } }}",
+        "options": {
+          "timeout": 2000
+        }
+      },
+      "id": "f39448e8-2e37-41d5-bc35-b73aed5b1664",
+      "name": "Enviar Ação Foto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -48,
+        1216
+      ],
+      "webhookId": "efa79b5a-73ea-4084-9b27-dc60dbc88e87",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(0, Math.ceil(Number($json.waitAfterActionMs || 0) / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "a2b8e3ba-0f25-4bc2-bc55-029a6acdd794",
+      "name": "17d2. Espera Pós-Ação Foto",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        208,
+        1360
+      ],
+      "webhookId": "82bbf549-c719-4d0d-b484-9b0429761913"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gerar resposta para mídia recebida do lead\nconst input = $json;\nconst tipoMidia = input.tipoMidia || 'desconhecido';\n\n// Respostas específicas por tipo de mídia (variações aleatórias)\nconst respostas = {\n  foto: [\n    \"nossa amor ja fico imaginando coisas vc mandando essa foto\",\n    \"suspeita essa foto viu oq vc ta querendo\"\n  ],\n  video: [\n    \"gosteii desse vídeo bb\",\n    \"ja to me imaginando ai com vc amor\"\n  ],\n  audio: [\n    \"que voz gostosa amor já imagino vc falando isso no meu ouvidinho\",\n    \"sua voz me ta me deixando louquinha\"\n  ],\n  documento: [\n    \"recebi seu arquivo amor\",\n    \"oq vc me mandou ai\"\n  ],\n  desconhecido: [\n    \"adorei amor\",\n    \"que legal\"\n  ]\n};\n\n// Selecionar resposta aleatória\nconst opcoes = respostas[tipoMidia] || respostas.desconhecido;\nconst respostaMidia = opcoes[Math.floor(Math.random() * opcoes.length)];\n\nreturn [{ \n  json: { \n    ...input, \n    respostaMidia,\n    enviarRespostaMidia: true \n  } \n}];"
+      },
+      "id": "d1187b7a-bdf6-4684-8725-c0ac4df6ed51",
+      "name": "25c. Gerar Resposta Mídia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        2720
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"text\": String($json.respostaMidia) } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "a702cf48-9808-42f4-9d83-0a5b695157d3",
+      "name": "25d. Enviar Resposta Mídia",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        512,
+        2672
+      ],
+      "webhookId": "resposta-midia-webhook",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.responderMidia }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "4d08688d-7f7e-4189-8da0-e82428280221",
+      "name": "25e. É Mídia?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        64,
+        2608
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.chat_id }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "9d9ed327-864e-4234-9093-5963ddcac9c0",
+      "name": "5c. Lock OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1744,
+        2016
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Restaurar contexto após obter lock atômico\nconst lockResult = $input.first().json;\nconst base = $node['4. Check Lock'].json || $node['4b. Montar Params UPSERT'].json || {};\n\n// Atualizar lead com dados retornados do banco (mais fresco)\nconst leadAtualizado = {\n  ...base.lead,\n  ...lockResult,\n  processando: true,\n  processando_desde: lockResult.processando_desde\n};\n\nreturn [{ \n  json: { \n    ...base, \n    lead: leadAtualizado \n  } \n}];"
+      },
+      "id": "458da1c5-ce00-4fdf-b22a-ed268af78969",
+      "name": "5d. Restore Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1408,
+        1760
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "193d231f-67f4-464f-8a69-ce0f9ca592d2",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        592,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM public.leads WHERE status='ATIVO' AND is_sending_sequence=false AND (processando=false OR processando_desde < NOW() - INTERVAL '5 minutes') AND ( (etapa < 7 AND ultima_interacao < NOW() - INTERVAL '15 minutes' AND COALESCE(cutucadas_enviadas,0) < 3) OR (etapa = 7 AND aguardando_pagamento=true AND entrou_etapa_7_em < NOW() - INTERVAL '15 minutes' AND COALESCE(recuperacao_tentativas,0) < 3 AND (ultima_recuperacao IS NULL OR ultima_recuperacao < NOW() - INTERVAL '15 minutes')))",
+        "options": {}
+      },
+      "id": "0d93a35f-523c-4124-81a7-6245c7b8105c",
+      "name": "1. Buscar Leads Inativos",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        816,
+        848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalizar resultados do Postgres para 1 item por lead\nconst items = $input.all();\nif (!items || items.length === 0) return [];\n// Caso A: Postgres já retorna 1 item por linha\nif (items.length > 1) return items.map(i => ({ json: i.json }));\n// Caso B: Postgres retorna um único item contendo array\nconst maybe = items[0].json;\nconst arr = Array.isArray(maybe) ? maybe : (Array.isArray(maybe?.rows) ? maybe.rows : [maybe]);\nreturn arr.filter(Boolean).map(lead => ({ json: lead }));"
+      },
+      "id": "6e12b3e3-cd64-4248-a6c3-b95bd7f7a8d0",
+      "name": "2. Processar Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 2b. Decidir Ação (Run Once for Each Item)\n// Decide se envia recuperação ou cutucada, baseado no lead\n\nconst lead = $json;\n\n// Recuperação quando etapa 7 aguardando pagamento e já houve tentativa\nconst isRecuperacao = Boolean((lead.etapa === 7 || lead.etapa === 8) && lead.aguardando_pagamento);\n\nreturn {\n  ...lead,\n  acao: isRecuperacao ? \"recuperacao\" : \"cutucada\",\n};"
+      },
+      "id": "433e6d95-50ee-4526-850d-6c00f091d485",
+      "name": "2b. Decidir Ação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.acao }}",
+              "value2": "recuperacao"
+            }
+          ]
+        }
+      },
+      "id": "ae12c0de-e22c-484d-a80b-f3dd71051c2b",
+      "name": "2c. É Recuperação?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1632,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendAudio",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chat_id), \"audio\": \"https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%208%20recupera%C3%A7%C3%A3o%20de%20pix%201.ogg\" } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "6e410211-605d-4848-b8a8-ae37f910071d",
+      "name": "Recuperação Audio 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1904,
+        736
+      ],
+      "webhookId": "70b03687-fb90-4c56-8cab-3fa7235749aa",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendAudio",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chat_id), \"audio\": \"https://pub-52451f2cd9f34b9fb2e8d6c38473e44c.r2.dev/audio%209%20problema%20com%20pix.ogg\" } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "61408b86-b5a5-4b7f-a45e-54aabb770ecf",
+      "name": "Recuperação Audio 2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2112,
+        736
+      ],
+      "webhookId": "a89551c7-56d7-4bea-ae78-8bbb3f20e128",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET etapa = 8, mensagens_na_etapa = 0, respostas_bot_na_etapa = 0, ultima_interacao = NOW(), recuperacao_tentativas = COALESCE(recuperacao_tentativas,0) + 1, ultima_recuperacao = NOW(), recuperacao_enviada_em = NOW(), processando=false, processando_desde=NULL WHERE chat_id = $1",
+        "options": {
+          "queryReplacement": "{{ String($json.chat_id) }}"
+        }
+      },
+      "id": "1b2d2de1-12da-4df0-9929-9d5f1d4d50ed",
+      "name": "Mover para Etapa 8",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2432,
+        752
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 3. Escolher Mensagem (Run Once for Each Item)\nconst lead = $json;\nconst cutucada = lead.cutucadas_enviadas || 0;\n\nconst msgs = [\n  \"mor? me deixou no vacuoooo 😢\",\n  \"você não gostou de mim ? 🥺\",\n  \"to achando que você não gosta de mulher? kkkk\"\n];\n\nconst mensagem = msgs[cutucada] || msgs[2];\n\nreturn {\n  chatId: String(lead.chat_id),\n  mensagem,\n  cutucadaNumero: cutucada + 1,\n  leadId: lead.id,\n};"
+      },
+      "id": "c6a2e5e8-0c61-49a0-a73e-21862f04bc09",
+      "name": "3. Escolher Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($json.chatId), \"text\": $json.mensagem } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b661c77a-9a81-4071-a750-bde155446ae6",
+      "name": "4. Enviar Cutucada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2144,
+        1184
+      ],
+      "webhookId": "e317f16a-4364-4ee5-b35f-6b6c0e6ef12f",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET cutucadas_enviadas = COALESCE(cutucadas_enviadas, 0) + 1, ultima_interacao = NOW(), processando=false, processando_desde=NULL WHERE chat_id = $1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}"
+        }
+      },
+      "id": "c4e3b38a-a46f-4dd3-a939-7c848b081019",
+      "name": "5. Incrementar Contador",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        4448,
+        1680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 4b. Restore After Cutucada Send (Run Once for Each Item)\n\nconst respostaHTTP = $json; // resposta do Telegram do node \"4. Enviar Cutucada\"\n\n// índice do item original que gerou esse HTTP\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\n// origem do contexto (antes do HTTP)\nlet base = {};\ntry {\n  const origem = $items(\"3. Escolher Mensagem\");\n  base = origem?.[origIndex]?.json ?? {};\n} catch (e) {\n  base = $node[\"3. Escolher Mensagem\"]?.json ?? {};\n}\n\n// garante objeto plain\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\n// sucesso/erro\nconst envioSucesso = respostaHTTP?.ok === true;\nconst envioErro = respostaHTTP?.ok === false || Boolean(respostaHTTP?.error);\nconst erroDescricao = envioErro\n  ? (respostaHTTP?.description || respostaHTTP?.error || \"Erro desconhecido\")\n  : null;\n\nif (envioErro) {\n  const chatDebug = base.chatId ?? base.chat_id ?? base.lead?.chat_id ?? \"N/A\";\n  console.log(`❌ Erro cutucada para chat ${chatDebug}: ${erroDescricao}`);\n}\n\n// retorno correto no modo Each Item: OBJETO simples\nreturn {\n  ...base,\n  respostaHTTP,\n  envioRealizado: envioSucesso,\n  envioErro,\n  erroDescricao,\n  timestampEnvio: Date.now(),\n};"
+      },
+      "id": "83c2b8f2-dd89-4161-bb05-eb3c5b520363",
+      "name": "4b. Restore After Cutucada Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4176,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 2a3. Restore After Lock (Run Once for Each Item)\n// Input atual: resultado do Postgres de lock\n\nconst dbResult = $json;\n\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\nlet base = {};\ntry {\n  const origem = $items(\"2c. É Recuperação?\");\n  base = origem?.[origIndex]?.json ?? {};\n} catch (e) {\n  base = $node[\"2c. É Recuperação?\"]?.json ?? {};\n}\n\n// Fallback extra (se 2c não tiver dados por algum branch)\nif (!base || typeof base !== \"object\" || Array.isArray(base)) {\n  try {\n    const origem2 = $items(\"2. Buscar Lead\");\n    base = origem2?.[origIndex]?.json ?? {};\n  } catch (e2) {\n    base = $node[\"2. Buscar Lead\"]?.json ?? {};\n  }\n}\n\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\nreturn {\n  ...base,\n  lockResult: dbResult,\n  timestampLock: Date.now(),\n};"
+      },
+      "id": "91bbd2ad-4458-405f-acd5-0d583da38c02",
+      "name": "Rec1. Restore After Audio1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2928,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Rec2. Restore After Audio2 (Run Once for Each Item)\n// Input atual: resposta do Telegram do node \"Recuperação Audio 2\"\n\nconst respostaHTTP = $json;\n\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\nlet base = {};\ntry {\n  const origem = $items(\"2c. É Recuperação?\");\n  base = origem?.[origIndex]?.json ?? {};\n} catch (e) {\n  base = $node[\"2c. É Recuperação?\"]?.json ?? {};\n}\n\nif (!base || typeof base !== \"object\" || Array.isArray(base)) base = {};\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\nconst envioSucesso = respostaHTTP?.ok === true;\nconst envioErro = respostaHTTP?.ok === false || Boolean(respostaHTTP?.error);\nconst erroDescricao = envioErro\n  ? (respostaHTTP?.description || respostaHTTP?.error || \"Erro desconhecido\")\n  : null;\n\nif (envioErro) {\n  const chatDebug = base.chatId ?? base.chat_id ?? base.lead?.chat_id ?? \"N/A\";\n  console.log(`❌ Erro Rec2 (Audio2) para chat ${chatDebug}: ${erroDescricao}`);\n}\n\nreturn {\n  ...base,\n  respostaHTTP,\n  envioRealizado: envioSucesso,\n  envioErro,\n  erroDescricao,\n  timestampEnvio: Date.now(),\n};"
+      },
+      "id": "eff484dd-a71f-434a-be13-f987348a7d34",
+      "name": "Rec2. Restore After Audio2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3232,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET processando=true, processando_desde=NOW() WHERE chat_id=$1 AND (processando=false OR processando_desde < NOW() - INTERVAL '5 minutes') AND is_sending_sequence=false RETURNING chat_id",
+        "options": {
+          "queryReplacement": "{{ String($json.chat_id) }}"
+        }
+      },
+      "id": "8312a041-7d1d-49b9-9a78-9dc713c03100",
+      "name": "2a. Lock Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1168,
+        848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.chat_id }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "6bb104f9-eeb8-444f-8c31-6b840810d697",
+      "name": "2a2. Lock OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 2a3. Restore After Lock (Run Once for Each Item)\n// Input atual: resultado do Postgres do lock\n\nconst dbResult = $json;\n\n// índice do item original que gerou este branch\nconst paired = $input.item?.pairedItem;\nconst origIndex = Array.isArray(paired)\n  ? (paired[0]?.item ?? 0)\n  : (paired?.item ?? 0);\n\n// tenta recuperar o contexto base de nós anteriores (em ordem)\nlet base = {};\n\nfunction tryGetBase(nodeName) {\n  try {\n    const arr = $items(nodeName);\n    const it = arr?.[origIndex]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  try {\n    const it = $node[nodeName]?.json;\n    if (it && typeof it === \"object\" && !Array.isArray(it)) return it;\n  } catch (e) {}\n  return null;\n}\n\nbase =\n  tryGetBase(\"2a2. Lock OK?\") ||\n  tryGetBase(\"2c. É Recuperação?\") ||\n  tryGetBase(\"2. Buscar Lead\") ||\n  {};\n\n// garante objeto “plain”\ntry { base = JSON.parse(JSON.stringify(base)); } catch (e) { base = {}; }\n\nreturn {\n  ...base,\n  lockResult: dbResult,\n  timestampLock: Date.now(),\n};"
+      },
+      "id": "7e3ed679-75a9-4c18-83ba-9122588dd880",
+      "name": "2a3. Restore After Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET processando=false, processando_desde=NULL WHERE chat_id=$1",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId || $json.chat_id) }}"
+        }
+      },
+      "id": "ba2ecf49-901b-431e-8048-8bd9aa1fe802",
+      "name": "6. Release Lock",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2672,
+        864
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Processar webhook e validar assinatura (preferindo raw body quando disponível)\nconst secret = ($json.secret || '').trim() || $env.SYNCPAY_WEBHOOK_SECRET;\nconst headers = ($json.headers || $json?.headers) || {};\nconst sigRaw =\n  headers['x-syncpay-signature'] ||\n  headers['X-SYNCPAY-SIGNATURE'] ||\n  headers['x-syncpay-signature'.toLowerCase()];\n\nconst signature = (sigRaw || '').toString().replace(/^sha256=/i,'').trim().toLowerCase();\n\nconst rawBody = $json.rawBody || $json.bodyRaw || $json.raw || null;\nconst payload = $json.body ?? $json;\n\nif (secret) {\n  if (!signature) return [{ json: { success: false, error: 'missing signature', stop: true } }];\n  const crypto = require('crypto');\n  const dataToSign = rawBody ? rawBody : JSON.stringify(payload);\n  const expected = crypto.createHmac('sha256', secret).update(dataToSign).digest('hex').toLowerCase();\n  if (expected !== signature) return [{ json: { success: false, error: 'invalid signature', stop: true } }];\n}\n\nconst chatId = payload.customer_id || payload.external_reference || payload.metadata?.chat_id;\nconst status = payload.status || payload.payment_status;\nconst valor = payload.value || payload.amount;\nconst transactionId = payload.transaction_id || payload.id;\nconst metodo = payload.method || payload.payment_method || payload.metodo || payload.type;\n\nif (!chatId) return [{ json: { success: false, error: 'customer_id missing', stop: true } }];\n\nconst isPago = (status === 'PAID' || status === 'approved' || status === 'paid' || status === 'confirmed');\n\nreturn [{\n  json: {\n    success: true,\n    chatId: chatId.toString(),\n    status,\n    isPago,\n    valor,\n    transactionId,\n    metodo,\n    rawPayload: payload\n  }\n}];"
+      },
+      "id": "cab31533-a2c6-453e-b556-9c4bb644f6f4",
+      "name": "1. Processar Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        2832
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.stop }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ff3950de-987b-4ce4-ac83-55d9400ede7b",
+      "name": "1b. Erro de Validação?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        2832
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { success: false, error: $json.error || 'invalid webhook' } }];"
+      },
+      "id": "f66155f9-8900-4bf6-9182-b9fc99c0e899",
+      "name": "1c. Response Erro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        2720
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isPago }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "bab8b964-953e-4c22-bc6f-a5e25bcf06f7",
+      "name": "2. Pagamento Aprovado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        2688
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET payment_status = 'PAID', status = 'PAGO', aguardando_pagamento = false, pagamento_transaction_id = NULLIF($2,''), pagamento_valor = ($3)::numeric, pagamento_pago_em = NOW(), pagamento_metodo = NULLIF($4,''), pagamento = ($5)::jsonb WHERE chat_id = $1 RETURNING *",
+        "options": {
+          "queryReplacement": "{{ String($json.chatId) }}, {{ ($json.transactionId || '').toString() }}, {{ $json.valor ?? 0 }}, {{ ($json.metodo || '').toString() }}, {{ JSON.stringify($json.rawPayload || {}) }}"
+        }
+      },
+      "id": "66b219c8-27c5-4003-9524-4f1b890773f7",
+      "name": "3. Atualizar Lead PAGO",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2112,
+        2864
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($node['1. Processar Webhook'].json.chatId), \"text\": \"amor recebi seu pix 💕💕💕 agora vc é meu viu 😈\\n\\nolha o conteúdo exclusivo que preparei só pra vc 🔥\\n\\+https://t.me/+i1l8XOMdLNdiMDFh\\n\\nqualquer coisa me chama lá que eu te respondo tá? ❤️\" } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3e5698d4-d15a-42f4-82c5-7e0e24cd4d7e",
+      "name": "4. Enviar Link VIP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2320,
+        2720
+      ],
+      "webhookId": "2f21e0a3-0dc2-40ab-bc31-7cb9088edb97",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"chat_id\": Number($node['1. Processar Webhook'].json.chatId), \"text\": \"🎉🎉🎉\\n\\nobrigada meu amor pela confiança\\n\\nte espero lá no VIP para fazer você gozar muito 😘🔥\\n\\nbeijooos ❤️\" } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "abfc4387-d65a-43d8-a8d8-a4e0d95426cc",
+      "name": "5. Enviar Agradecimento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2512,
+        2720
+      ],
+      "webhookId": "0e27d096-4e74-487c-b907-e69d403169fa",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Response sucesso - com fallback\nlet chatId = null;\ntry {\n  chatId = $node['1. Processar Webhook']?.json?.chatId;\n} catch (e) {\n  chatId = $json?.chatId || null;\n}\nreturn [{ json: { success: true, message: 'Pagamento processado', chatId: chatId } }];"
+      },
+      "id": "78dea28f-7e3e-48ef-8ee1-d97e3c81dbe2",
+      "name": "6. Response Sucesso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2848,
+        2736
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.leads SET payment_status = $1, pagamento_transaction_id = COALESCE(NULLIF($2,''), pagamento_transaction_id), pagamento_valor = COALESCE(NULLIF($3::text,'')::numeric, pagamento_valor), pagamento_metodo = COALESCE(NULLIF($4,''), pagamento_metodo), pagamento = COALESCE(($5)::jsonb, pagamento) WHERE chat_id = $6",
+        "options": {
+          "queryReplacement": "{{ ($json.status || '').toString() }}, {{ ($json.transactionId || '').toString() }}, {{ $json.valor ?? '' }}, {{ ($json.metodo || '').toString() }}, {{ JSON.stringify($json.rawPayload || {}) }}, {{ String($json.chatId) }}"
+        }
+      },
+      "id": "f437a283-f4e7-449d-905f-c341f3c57097",
+      "name": "7. Atualizar Status Pendente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2112,
+        3056
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Response pendente - com fallback\nlet status = 'unknown';\ntry {\n  status = $node['1. Processar Webhook']?.json?.status || 'unknown';\n} catch (e) {\n  status = $json?.status || 'unknown';\n}\nreturn [{ json: { success: true, message: 'Status atualizado', status: status } }];"
+      },
+      "id": "fba130fc-d472-42b9-9b74-d85581128c23",
+      "name": "8. Response Pendente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        2928
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "b26a88c2-0162-47cf-894f-7c520e577e19",
+      "name": "0. Load Secrets",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        2624,
+        2944
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isStart === false }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "d4e69be1-0d93-4a38-83e9-98e7a379460c",
+      "name": "3aa. Debounce? (skip /start)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -2704,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.leads (\n  chat_id,\n  nome,\n  ultima_msg_id,\n  ultima_msg_ts,\n  ultima_mensagem_lead,\n  ultima_mensagem_lead_text,\n  ultima_interacao\n)\nVALUES (\n  $1,\n  $2,\n  $3,\n  $4,\n  to_timestamp($4 / 1000.0),\n  $5,\n  NOW()\n)\nON CONFLICT (chat_id)\nDO UPDATE SET\n  nome = EXCLUDED.nome,\n\n  -- Só atualiza \"ultima_msg_*\" se a mensagem que chegou é MAIS NOVA\n  ultima_msg_ts = CASE\n    WHEN COALESCE(public.leads.ultima_msg_ts, 0) <= EXCLUDED.ultima_msg_ts\n      THEN EXCLUDED.ultima_msg_ts\n    ELSE public.leads.ultima_msg_ts\n  END,\n\n  ultima_msg_id = CASE\n    WHEN COALESCE(public.leads.ultima_msg_ts, 0) <= EXCLUDED.ultima_msg_ts\n      THEN EXCLUDED.ultima_msg_id\n    ELSE public.leads.ultima_msg_id\n  END,\n\n  ultima_mensagem_lead = CASE\n    WHEN COALESCE(public.leads.ultima_msg_ts, 0) <= EXCLUDED.ultima_msg_ts\n      THEN EXCLUDED.ultima_mensagem_lead\n    ELSE public.leads.ultima_mensagem_lead\n  END,\n\n  ultima_mensagem_lead_text = CASE\n    WHEN COALESCE(public.leads.ultima_msg_ts, 0) <= EXCLUDED.ultima_msg_ts\n      THEN EXCLUDED.ultima_mensagem_lead_text\n    ELSE public.leads.ultima_mensagem_lead_text\n  END,\n\n  ultima_interacao = NOW()\n\nRETURNING chat_id, ultima_msg_id, ultima_msg_ts;",
+        "options": {
+          "queryReplacement": "=$1 = {{ String($json.chatId ?? $json.chat_id ?? $json.lead?.chat_id ?? \"\") }}\n$2 = {{ String($json.userName ?? $json.nome ?? $json.lead?.nome ?? \"\") }}\n$3 = {{ Number($json.messageId ?? 0) }}\n$4 = {{ Number($json.timestampAtual ?? 0) }}\n$5 = {{ String($json.texto ?? \"\") }}"
+        }
+      },
+      "id": "3544c8f0-d5e0-4f6b-8b1b-6b2f7059ef5e",
+      "name": "3ac. Upsert + Mark Last Msg",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -2288,
+        992
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "d30cf26c-6417-4cec-8c26-ed3c9efa789a",
+      "name": "3ad. Debounce Wait 30s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        -2192,
+        704
+      ],
+      "webhookId": "b4538395-d640-4a6f-ac1b-02d66d3f0e93"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM public.leads\nWHERE chat_id = $1\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "=$1 = {{ String($json.chatId ?? $json.chat_id ?? $json.lead?.chat_id ?? \"\") }}"
+        }
+      },
+      "id": "9cad7c91-236e-424c-ba94-2abfe42c9d67",
+      "name": "3ae. Buscar Lead (Debounce)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1792,
+        928
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.debounceOk === true }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "68358c77-e2f3-47b1-a194-d0e686aeac1b",
+      "name": "3ag. Debounce OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ (() => { const c = $node['Split In Batches']?.json ?? {}; const t = String(c.respostaBot ?? '').length; const sec = Math.max(2, Math.min(7, Math.round(1.2 + (t / 22)))); return sec; })() }}",
+        "unit": "seconds"
+      },
+      "id": "b433cd6e-e134-4bc7-b60d-ac4a2e98fc08",
+      "name": "27b. Espera Digitando Groq (5s)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        -992,
+        3216
+      ],
+      "webhookId": "56efc708-0370-482f-9c32-8dc2e2943a44"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$vars.TELEGRAM_BOT_TOKEN || $env.TELEGRAM_BOT_TOKEN}}/sendChatAction",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const chatId = Number($json.chatId ?? $json.chat_id ?? $json.lead?.chat_id ?? 0);\n  return { chat_id: chatId, action: \"typing\" };\n})() }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "ed0459e1-b4c4-4e2a-a1d5-f6db4eb066b4",
+      "name": "27a. Enviar Ação Digitando Groq",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -1168,
+        3216
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "8cf9ebd4-161a-4e1c-ab70-26433ad30182",
+      "name": "3ah. Debounce Falho (Msg Descartada)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1088,
+        1216
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 9,
+        "output": "={{ Number($json.lead?.etapa ?? 0) }}"
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -1104,
+        2016
+      ],
+      "id": "80e43923-c7fc-4e66-9f44-f55139d16dd2",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 3ab. Ensure Debounce Columns (CORRIGIDO + NORMALIZA ms)\n// Objetivo: NÃO apagar os dados. Garantir campos e timestamp em MILISSEGUNDOS.\n\nconst j = $json ?? {};\nconst leadIn = (j.lead && typeof j.lead === 'object') ? j.lead : {};\n\nconst chatId = String(j.chatId ?? j.chat_id ?? leadIn.chat_id ?? \"\");\nconst userName = String(j.userName ?? j.nome ?? leadIn.nome ?? \"\");\n\nconst messageId = Number(j.messageId ?? j.message?.message_id ?? j.message_id ?? 0);\n\nlet timestampAtual = Number(\n  j.timestampAtual ??\n  (j.message?.date ? Number(j.message.date) : Date.now())\n);\n\n// Se vier em SEGUNDOS (10 dígitos), converte pra MILISSEGUNDOS (13 dígitos)\nif (timestampAtual > 0 && timestampAtual < 1000000000000) {\n  timestampAtual = timestampAtual * 1000;\n}\n\nconst texto = String(j.texto ?? j.text ?? \"\");\n\nreturn [{\n  json: {\n    ...j,\n    chatId,\n    userName,\n    messageId,\n    timestampAtual,\n    texto,\n    lead: {\n      ...leadIn,\n      chat_id: String(leadIn.chat_id ?? chatId ?? \"\"),\n      nome: String(leadIn.nome ?? userName ?? \"\"),\n      ultima_msg_id: (leadIn.ultima_msg_id ?? null),\n      ultima_msg_ts: (leadIn.ultima_msg_ts ?? null),\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2448,
+        720
+      ],
+      "id": "c84ad3fc-e484-432b-a768-6178ce2bf07b",
+      "name": "3ab. Ensure Debounce Columns1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "246d89f5-2f40-47a5-86c1-461705f7033e",
+              "name": "=chatKey",
+              "value": "={{ String($json.chatId ?? $json.chat_id ?? \"\") }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2000,
+        704
+      ],
+      "id": "c0ee6ed5-4a5e-4216-a7a4-1e9f80f832b3",
+      "name": "3adA. Set Base chatKey"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a0686a29-0d9d-4353-8c6c-3b6f14136cac",
+              "name": "=chatKey",
+              "value": "={{ String($json.chat_id ?? $json.chatId ?? \"\") }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1584,
+        928
+      ],
+      "id": "d6d8b790-2ccb-43a1-9a99-71d1ced461b8",
+      "name": "3aeA. Set DB chatKey"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -1456,
+        672
+      ],
+      "id": "ac2cdef3-a449-4c51-acad-94d0cd2134d1",
+      "name": "3aeB. Merge Base + DB (chatKey)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 3af. Gate Debounce (usando Merge por chatKey)\n// Agora o item já tem: messageId/timestampAtual (da base) + ultima_msg_id/ultima_msg_ts (do DB)\n\nfunction toMs(x) {\n  if (x === null || x === undefined) return null;\n\n  // Se vier como número\n  if (typeof x === 'number') {\n    // se parecer segundos, converte\n    if (x > 0 && x < 1000000000000) return x * 1000;\n    return x;\n  }\n\n  // Se vier como string número\n  const s = String(x).trim();\n  if (/^\\d+$/.test(s)) {\n    const n = Number(s);\n    if (n > 0 && n < 1000000000000) return n * 1000;\n    return n;\n  }\n\n  // Se vier como data ISO (timestamptz), tenta parse\n  const parsed = Date.parse(s);\n  if (!Number.isNaN(parsed)) return parsed;\n\n  return null;\n}\n\nconst thisMsgId = String($json.messageId ?? \"\");\nconst lastMsgId = String($json.ultima_msg_id ?? \"\");\n\nconst thisTsMs = toMs($json.timestampAtual);\nconst lastTsMs = toMs($json.ultima_msg_ts);\n\nconst debounceOk =\n  Boolean(thisMsgId && lastMsgId && thisMsgId === lastMsgId) &&\n  Boolean(thisTsMs && lastTsMs && thisTsMs === lastTsMs);\n\n// Coloco campos de debug pra você ver fácil no execution\nreturn [{\n  json: {\n    ...$json,\n    debounceOk,\n    _debounce_debug: {\n      thisMsgId,\n      lastMsgId,\n      thisTsMs,\n      lastTsMs\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        960
+      ],
+      "id": "6bb5e212-4b5f-4a11-a51a-44c5bb5084a5",
+      "name": "3af. Gate Debounce (merge)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 3aeC. Compactar (1 item) - preferir SEMPRE o SELECT (3ae) como DB\n// Junta base + db num único item e garante que ultima_msg_* vem do SELECT.\n\nconst all = $input.all().map(i => i.json);\n\n// base = item que tem messageId/timestampAtual\nconst base = all.find(x => x && (x.timestampAtual != null || x.messageId != null)) ?? {};\n\n// dbPreferido = item do SELECT costuma ter MUITOS campos (etapa/status/etc).\n// Isso evita pegar \"db\" de retorno do 3ac (que é pequeno e pode confundir).\nconst isSelectRow = (x) => {\n  if (!x || typeof x !== 'object') return false;\n  return (\n    x.etapa !== undefined ||\n    x.status !== undefined ||\n    x.pontos_engajamento !== undefined ||\n    x.recuperacao_tentativas !== undefined ||\n    x.historico_comportamentos !== undefined ||\n    x.pagamento_status !== undefined ||\n    x.ultima_mensagem_lead !== undefined ||\n    x.ultima_mensagem_lead_text !== undefined\n  );\n};\n\nconst db =\n  all.find(isSelectRow) ??\n  all.find(x => x && (x.ultima_mensagem_lead !== undefined || x.ultima_mensagem_lead_text !== undefined)) ??\n  all.find(x => x && (x.ultima_msg_id != null || x.ultima_msg_ts != null)) ??\n  {};\n\n// Monta merged garantindo que:\n// - messageId/timestampAtual vem da base\n// - ultima_msg_id/ultima_msg_ts vem do db (SELECT)\nconst merged = {\n  ...db,\n  ...base,\n  chatId: String(base.chatId ?? db.chatId ?? db.chat_id ?? \"\"),\n  chatKey: String(base.chatKey ?? db.chatKey ?? base.chatId ?? db.chat_id ?? \"\").trim(),\n};\n\n// força ultima_msg_* vir do db (não deixa base sobrescrever)\nif (db && typeof db === 'object') {\n  if (db.ultima_msg_id != null) merged.ultima_msg_id = db.ultima_msg_id;\n  if (db.ultima_msg_ts != null) merged.ultima_msg_ts = db.ultima_msg_ts;\n}\n\nreturn [{ json: merged }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        672
+      ],
+      "id": "ecacf120-62b1-4b41-90f9-7c873ecfb055",
+      "name": "3aeC. Compactar (1 item)"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "advanced": true,
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "chatId",
+              "field2": "chat_id"
+            }
+          ]
+        },
+        "outputDataFrom": "input1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -2016,
+        992
+      ],
+      "id": "8c5bcbc2-db71-4a67-98ba-b76d2b4de31e",
+      "name": "3acB. Sync Upsert + Base"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 12a. Build SeqKey (Idempotência de sequência)\n// Cria uma chave estável para garantir que UMA sequência não seja enviada 2x no mesmo chat.\n// Regras:\n// - Se $json.noIdempotency === true: não faz claim (pode repetir).\n// - Se existir $json.seqKey: usa ela.\n// - Se gerarPix === true: usa chave fixa por etapa (pra não mudar com pix dinâmico).\n// - Caso contrário: cria hash baseado no conteúdo da sequencia (tipo + url/mensagem), ignorando querystring.\n\nfunction fnv1a(str) {\n  let h = 0x811c9dc5;\n  for (let i = 0; i < str.length; i++) {\n    h ^= str.charCodeAt(i);\n    h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;\n  }\n  return ('0000000' + h.toString(16)).slice(-8);\n}\n\nconst j = $json || {};\nconst lead = (j.lead && typeof j.lead === 'object') ? j.lead : {};\n\nconst chatId = String(j.chatId ?? j.chat_id ?? lead.chat_id ?? \"\");\nconst etapa = Number(lead.etapa ?? j.etapa ?? 0);\nconst subEtapa = Number(lead.sub_etapa ?? j.sub_etapa ?? 0);\n\nif (j.noIdempotency === true) {\n  return [{ json: { ...j, chatId, needsClaim: false } }];\n}\n\nlet seqKey = (typeof j.seqKey === 'string' && j.seqKey.trim()) ? j.seqKey.trim() : \"\";\n\n// PIX / pagamento: chave fixa por etapa (evita hash mudar por dados dinâmicos)\nif (!seqKey && j.gerarPix === true) {\n  seqKey = `pix_stage${etapa}`;\n}\n\n// Se não tem seqKey, cria hash baseado no conteúdo estável da sequência\nif (!seqKey) {\n  const seq = Array.isArray(j.sequencia) ? j.sequencia : [];\n  const parts = seq.map((it) => {\n    const tipo = String(it?.tipo ?? \"\");\n    const msg = (it?.mensagem != null) ? String(it.mensagem) : \"\";\n    const url = (it?.url != null) ? String(it.url).split('?')[0] : \"\";\n    // prioridade: url sem query > mensagem\n    const core = url || msg;\n    return `${tipo}:${core}`;\n  }).join('|');\n\n  const basis = `stage=${etapa}|sub=${subEtapa}|${parts}`;\n  const h = fnv1a(basis);\n  seqKey = `seq_stage${etapa}_sub${subEtapa}_${h}`;\n}\n\nconst needsClaim = Boolean(chatId && seqKey);\n\nreturn [{\n  json: {\n    ...j,\n    chatId,\n    seqKey,\n    needsClaim\n  }\n}];\n"
+      },
+      "id": "aee6d136-fe90-48a1-bb63-399d1aac42bf",
+      "name": "12a. Build SeqKey",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        1728
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.needsClaim === true }}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "102adbdf-64ad-479b-a6bd-c646b2f8c54b",
+      "name": "12aB. Needs Claim?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -400,
+        2112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO public.lead_actions (chat_id, action_key, created_at)\n  VALUES ($1, $2, NOW())\n  ON CONFLICT (chat_id, action_key) DO NOTHING\n  RETURNING 1\n)\nSELECT \n  $1::text AS chat_id,\n  $2::text AS action_key,\n  EXISTS (SELECT 1 FROM ins) AS claimed;",
+        "options": {
+          "queryReplacement": "$1 = {{ String($json.chatId ?? $json.chat_id ?? $json.lead?.chat_id ?? \"\") }}\n$2 = {{ String($json.seqKey ?? \"\") }}"
+        }
+      },
+      "id": "0945b913-5b6c-4528-90a7-9055f495bb70",
+      "name": "12b. Claim SeqKey",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -192,
+        1920
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "b23zP6vhmwEA47Fv",
+          "name": "Postgres account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "e25a5560-fe38-490c-85b3-d7648006c28f",
+      "name": "12bM. Append Base + Claim",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        0,
+        2096
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 12bC. Compact Claim (1 item)\n// Junta o item base (com sequencia) + resultado do claim (claimed=true/false)\n// e devolve 1 item com tudo.\n\nconst all = $input.all().map(i => i.json);\n\n// Base: o item que tem 'sequencia' ou 'seqKey'\nconst base = all.find(x => x && (x.sequencia !== undefined || x.seqKey !== undefined)) ?? (all[0] ?? {});\n// Claim: o item que tem 'claimed'\nconst claim = all.find(x => x && (x.claimed !== undefined || x.action_key !== undefined)) ?? {};\n\nreturn [{\n  json: {\n    ...base,\n    claimed: Boolean(claim.claimed),\n    action_key: String(claim.action_key ?? base.seqKey ?? \"\"),\n  }\n}];\n"
+      },
+      "id": "96cf3479-71fa-449d-a8d7-b5ca8a453513",
+      "name": "12bC. Compact Claim (1 item)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        2096
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.claimed === true }}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "afb64733-dbc6-4104-abaa-1d67087dfa75",
+      "name": "12c. Claim OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        432,
+        2096
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "264180f4-8a89-490c-aad5-6b3cd68d3dca",
+              "leftValue": "={{$json.pix_code}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "f9bae6a7-3037-4fb6-8dc5-d3b3c5c0c184",
+              "leftValue": "={{$json.identifier}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2720,
+        1792
+      ],
+      "id": "e93b5617-81f5-4f9b-8c0e-d35a70ee5a5f",
+      "name": "20A. Syncpay OK?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// FIXAR CHAT ID ANTES DE ENVIAR PIX\nconst chatId =\n  $json.chatId ??\n  $json.chat_id ??\n  $json.lead?.chat_id ??\n  $node[\"Telegram Trigger\"]?.json?.message?.chat?.id ??\n  $node[\"Telegram Trigger\"]?.json?.chat?.id;\n\nif (!chatId) {\n  throw new Error(\"chatId ausente no item. Execute os nodes anteriores ou restaure o contexto (lead/trigger) antes de enviar mensagem.\");\n}\n\nreturn [{ json: { ...$json, chatId } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        2000
+      ],
+      "id": "eb85ab67-2549-431c-ae1d-e05f362fbe04",
+      "name": "20B. Debug Syncpay Error"
+    },
+    {
+      "parameters": {
+        "chatId": "=",
+        "text": "=={{ \"Chave PIX:\\n\" + ($json.pix_code ?? $json.body?.pix_code ?? \"PIX não retornou\") }}\n",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3296,
+        2032
+      ],
+      "id": "7f40a715-01b9-4eae-bd4f-883e4ba2f644",
+      "name": "TESTE DEBUG PIX",
+      "webhookId": "df3f0db4-0c02-4c5c-85a2-afcce8eaf826",
+      "credentials": {
+        "telegramApi": {
+          "id": "eWmF3qbABdY8mcEP",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.syncpayments.com.br/api/partner/v1/auth-token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "client_id",
+              "value": "c3d67e0d-5ede-48d9-9cb0-85ecc3b1e27d"
+            },
+            {
+              "name": "client_secret",
+              "value": "d1112b29-9d2b-4a66-a115-77df9cdbd9b4"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2288,
+        1968
+      ],
+      "id": "9fac8222-10b6-4acd-8066-748242b8616d",
+      "name": "Auth Token",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 19A. Gate PIX (Idempotência)\n// Decide se deve GERAR novo PIX, REUSAR o PIX existente, ou PULAR (já pago).\n// Saídas:\n// - $json.pixAction: 'generate' | 'reuse' | 'skip_paid'\n// - $json.isNewPix: boolean (true somente quando for gerar novo)\n\nconst input = $json ?? {};\ninput.lead = (input.lead && typeof input.lead === 'object' && !Array.isArray(input.lead)) ? input.lead : {};\nconst lead = input.lead;\n\nconst now = Date.now();\n\nconst paymentStatus = (lead.payment_status ?? input.payment_status ?? '').toString().toUpperCase();\nconst statusLead = (lead.status ?? '').toString().toUpperCase();\nconst aguardando = lead.aguardando_pagamento === true;\n\nconst pixCodeDb = (lead.pagamento_pix_code ?? lead.pix_code ?? lead.pixCode ?? '').toString().trim();\nconst expiresRaw = lead.pagamento_expires_em ?? lead.pagamento_expira_em ?? null;\n\nlet expiresMs = null;\nif (expiresRaw) {\n  const t = new Date(expiresRaw).getTime();\n  if (!Number.isNaN(t)) expiresMs = t;\n}\n\nconst isPaid = (paymentStatus === 'PAID' || statusLead === 'PAGO');\n\ninput.pixAction = 'generate';\ninput.isNewPix = true;\n\nif (isPaid) {\n  input.pixAction = 'skip_paid';\n  input.isNewPix = false;\n  // evita reentrar na lógica de pagamento\n  input.gerarPix = false;\n} else if (aguardando && pixCodeDb) {\n  // se não houver expires, assume reutilizável; se houver, checa validade\n  if (expiresMs === null || now < expiresMs) {\n    input.pixAction = 'reuse';\n    input.isNewPix = false;\n  } else {\n    // expirou\n    input.pixAction = 'generate';\n    input.isNewPix = true;\n  }\n} else {\n  // não estava aguardando ou não tem PIX salvo -> gerar\n  input.pixAction = 'generate';\n  input.isNewPix = true;\n}\n\nreturn [{ json: input }];"
+      },
+      "id": "5ced7f56-36ec-4844-8a70-28482e0321e2",
+      "name": "19A. Gate PIX (Idempotência)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        2192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.pixAction }}",
+              "value2": "generate"
+            }
+          ]
+        }
+      },
+      "id": "9540f2ee-c89d-4c5d-b6be-8ed8fb414adc",
+      "name": "19B. PIX: Gerar novo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2144,
+        2192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.pixAction }}",
+              "value2": "reuse"
+            }
+          ]
+        }
+      },
+      "id": "15a1ca5e-23e0-411b-a9e1-ca9725c1888d",
+      "name": "19C. PIX: Reusar existente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2560,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 19D. Preparar PIX Existente\n// Prepara campos pix_code/pixCode a partir do lead salvo no banco, para reenvio.\n\nconst input = $json ?? {};\ninput.lead = (input.lead && typeof input.lead === 'object' && !Array.isArray(input.lead)) ? input.lead : {};\nconst lead = input.lead;\n\nconst pix = (lead.pagamento_pix_code ?? lead.pix_code ?? lead.pixCode ?? '').toString();\nconst ident = (lead.pagamento_identifier ?? lead.pagamento_transaction_id ?? lead.identifier ?? '').toString();\n\nif (pix && !input.pix_code) input.pix_code = pix;\nif (pix && !input.pixCode) input.pixCode = pix;\nif (ident && !input.identifier) input.identifier = ident;\n\ninput.isNewPix = false;\n\nreturn [{ json: input }];"
+      },
+      "id": "0e26f0e4-ee33-46bc-b4fe-7cebccd471a9",
+      "name": "19D. Preparar PIX Existente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2768,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1360,
+        3104
+      ],
+      "id": "2a1ff49d-9a6e-4883-92f7-9419e0e89ae3",
+      "name": "Split In Batches"
+    },
+    {
+      "parameters": {},
+      "id": "0c956195-9606-49a0-bfd1-796b073748cb",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        4816,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ERROR_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"workflow\": \"bot-ana-julia\", \"error\": $json, \"timestamp\": new Date().toISOString() } }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a21dd8aa-2a27-41e8-8716-b87cad5bdebc",
+      "name": "Notificar Erro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        5008,
+        528
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fb4f34c0-6fd1-45f2-b930-8fdd046a996a",
+              "leftValue": "={{ String($json.countAsGroqReply) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "40eac6e7-9835-44f1-a7ee-9519fceb0dbd",
+      "name": "28c. Último chunk?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -384,
+        3200
+      ]
+    }
+  ],
+  "pinData": {
+    "Telegram Trigger": [
+      {
+        "json": {
+          "update_id": 780950464,
+          "message": {
+            "message_id": 1349,
+            "from": {
+              "id": 792749194,
+              "is_bot": false,
+              "first_name": "suporte",
+              "last_name": "c",
+              "username": "josecarrlos",
+              "language_code": "pt-br"
+            },
+            "chat": {
+              "id": 792749194,
+              "first_name": "suporte",
+              "last_name": "c",
+              "username": "josecarrlos",
+              "type": "private"
+            },
+            "date": 1770581175,
+            "text": "gostei"
+          }
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ],
+    "Schedule Trigger": [
+      {
+        "json": {
+          "timestamp": "2026-02-09T01:05:00.007-03:00",
+          "Readable date": "February 9th 2026, 1:05:00 am",
+          "Readable time": "1:05:00 am",
+          "Day of week": "Monday",
+          "Year": "2026",
+          "Month": "February",
+          "Day of month": "09",
+          "Hour": "01",
+          "Minute": "05",
+          "Second": "00",
+          "Timezone": "America/Sao_Paulo (UTC-03:00)"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "1. Extrair Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Extrair Mensagem": {
+      "main": [
+        [
+          {
+            "node": "2. Buscar Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Buscar Lead": {
+      "main": [
+        [
+          {
+            "node": "3. Preparar Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Preparar Lead": {
+      "main": [
+        [
+          {
+            "node": "3aa. Debounce? (skip /start)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Check Lock": {
+      "main": [
+        [
+          {
+            "node": "4b. Montar Params UPSERT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Atualizar Lock ON": {
+      "main": [
+        [
+          {
+            "node": "5c. Lock OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5b. Incrementar Msg Lead": {
+      "main": [
+        [
+          {
+            "node": "6. É /start?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. É /start?": {
+      "main": [
+        [
+          {
+            "node": "7. Reset para Etapa 0",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "8. É msg anti-bot?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Reset para Etapa 0": {
+      "main": [
+        [
+          {
+            "node": "7b. Persistir Reset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7b. Persistir Reset": {
+      "main": [
+        [
+          {
+            "node": "7c. Restaurar Contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. É msg anti-bot?": {
+      "main": [
+        [
+          {
+            "node": "9. Resposta Anti-Bot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Resposta Anti-Bot": {
+      "main": [
+        [
+          {
+            "node": "12 eviar sequencia 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 0": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 1": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 2": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 3": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Merge Etapas": {
+      "main": [
+        [
+          {
+            "node": "12 eviar sequencia 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Proteger Sequência?": {
+      "main": [
+        [
+          {
+            "node": "14. Ativar Proteção",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "15. Split Sequência",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14. Ativar Proteção": {
+      "main": [
+        [
+          {
+            "node": "14b. Restaurar Contexto Seq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15. Split Sequência": {
+      "main": [
+        [
+          {
+            "node": "15a. Sequencial (1 por vez)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15a. Sequencial (1 por vez)": {
+      "main": [
+        [
+          {
+            "node": "16b. Restore After Send",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "15b. Normalizar Tipo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Texto": {
+      "main": [
+        [
+          {
+            "node": "Merge Envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Audio": {
+      "main": [
+        [
+          {
+            "node": "Merge Envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Video": {
+      "main": [
+        [
+          {
+            "node": "Merge Envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Foto": {
+      "main": [
+        [
+          {
+            "node": "Merge Envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17b. Incrementar Resp Seq": {
+      "main": [
+        [
+          {
+            "node": "17c. É Último Item?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17c. É Último Item?": {
+      "main": [
+        [
+          {
+            "node": "17d. Progressão Pós-Sequência",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "17d. Progressão Pós-Sequência",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18. Desativar Proteção": {
+      "main": [
+        [
+          {
+            "node": "18b. Restaurar Contexto Pós-Proteção",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19. Gerar PIX?": {
+      "main": [
+        [
+          {
+            "node": "19A. Gate PIX (Idempotência)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "30. Salvar e Liberar Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20. Gerar PIX Syncpay": {
+      "main": [
+        [
+          {
+            "node": "20A. Syncpay OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "21. Extrair PIX": {
+      "main": [
+        [
+          {
+            "node": "22. Enviar PIX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "22. Enviar PIX": {
+      "main": [
+        [
+          {
+            "node": "22b. Restore After Send PIX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "23. Seq Pós-PIX": {
+      "main": [
+        [
+          {
+            "node": "24. Marcar Aguardando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "24. Marcar Aguardando": {
+      "main": [
+        [
+          {
+            "node": "24b. Restaurar Contexto Pós-Marcar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25b. Gate Groq": {
+      "main": [
+        [
+          {
+            "node": "25. Chamar Groq?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25. Chamar Groq?": {
+      "main": [
+        [
+          {
+            "node": "26. Groq AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "25e. É Mídia?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "26. Groq AI": {
+      "main": [
+        [
+          {
+            "node": "27. Extrair e Enviar Resposta Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "27. Extrair e Enviar Resposta Groq": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "28. Enviar Resposta Groq": {
+      "main": [
+        [
+          {
+            "node": "28b. Restore After Send Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "28b. Restore After Send Groq": {
+      "main": [
+        [
+          {
+            "node": "28c. Último chunk?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "29. Verificar Progressão": {
+      "main": [
+        [
+          {
+            "node": "30. Salvar e Liberar Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4b. Montar Params UPSERT": {
+      "main": [
+        [
+          {
+            "node": "5. Atualizar Lock ON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7c. Restaurar Contexto": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14b. Restaurar Contexto Seq": {
+      "main": [
+        [
+          {
+            "node": "15. Split Sequência",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16b. Restore After Send": {
+      "main": [
+        [
+          {
+            "node": "17b. Incrementar Resp Seq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "22b. Restore After Send PIX": {
+      "main": [
+        [
+          {
+            "node": "23. Seq Pós-PIX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 4": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 5": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 6": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 7": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ETAPA 8": {
+      "main": [
+        [
+          {
+            "node": "11. Merge Etapas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18b. Restaurar Contexto Pós-Proteção": {
+      "main": [
+        [
+          {
+            "node": "19. Gerar PIX?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "24b. Restaurar Contexto Pós-Marcar": {
+      "main": [
+        [
+          {
+            "node": "12 eviar sequencia 2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "13. Proteger Sequência?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17d. Progressão Pós-Sequência": {
+      "main": [
+        [
+          {
+            "node": "18. Desativar Proteção",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12 eviar sequencia 2": {
+      "main": [
+        [
+          {
+            "node": "12a. Build SeqKey",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "25b. Gate Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16a Tipo é Texto ?": {
+      "main": [
+        [
+          {
+            "node": "17a. Delay Texto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16b Tipo é audio ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16b Tipo é audio ?": {
+      "main": [
+        [
+          {
+            "node": "17b. Delay Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16c Tipo é video ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16c Tipo é video ?": {
+      "main": [
+        [
+          {
+            "node": "17c. Delay Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16d Tipo é foto ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15b. Normalizar Tipo": {
+      "main": [
+        [
+          {
+            "node": "16a Tipo é Texto ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16d Tipo é foto ?": {
+      "main": [
+        [
+          {
+            "node": "17d. Delay Foto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "16e. Ignorar Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16e. Ignorar Item": {
+      "main": [
+        [
+          {
+            "node": "Merge Envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Envios": {
+      "main": [
+        [
+          {
+            "node": "15a. Sequencial (1 por vez)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17a. Delay Texto": {
+      "main": [
+        [
+          {
+            "node": "17a2. Espera Pós-Ação Texto",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Enviar Ação Digitando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17b. Delay Audio": {
+      "main": [
+        [
+          {
+            "node": "Enviar Ação Audio",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "17b2. Espera Pós-Ação Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17c. Delay Video": {
+      "main": [
+        [
+          {
+            "node": "Enviar Ação Video",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "17c2. Espera Pós-Ação Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17d. Delay Foto": {
+      "main": [
+        [
+          {
+            "node": "Enviar Ação Foto",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "17d2. Espera Pós-Ação Foto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17a2. Espera Pós-Ação Texto": {
+      "main": [
+        [
+          {
+            "node": "Enviar Texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17b2. Espera Pós-Ação Audio": {
+      "main": [
+        [
+          {
+            "node": "Enviar Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17c2. Espera Pós-Ação Video": {
+      "main": [
+        [
+          {
+            "node": "Enviar Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17d2. Espera Pós-Ação Foto": {
+      "main": [
+        [
+          {
+            "node": "Enviar Foto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25e. É Mídia?": {
+      "main": [
+        [
+          {
+            "node": "25c. Gerar Resposta Mídia",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "30. Salvar e Liberar Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25c. Gerar Resposta Mídia": {
+      "main": [
+        [
+          {
+            "node": "25d. Enviar Resposta Mídia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25d. Enviar Resposta Mídia": {
+      "main": [
+        [
+          {
+            "node": "30. Salvar e Liberar Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5c. Lock OK?": {
+      "main": [
+        [
+          {
+            "node": "5d. Restore Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5d. Restore Lock": {
+      "main": [
+        [
+          {
+            "node": "5b. Incrementar Msg Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "1. Buscar Leads Inativos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Buscar Leads Inativos": {
+      "main": [
+        [
+          {
+            "node": "2. Processar Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Processar Leads": {
+      "main": [
+        [
+          {
+            "node": "2a. Lock Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2b. Decidir Ação": {
+      "main": [
+        [
+          {
+            "node": "2c. É Recuperação?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2c. É Recuperação?": {
+      "main": [
+        [
+          {
+            "node": "Recuperação Audio 1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "3. Escolher Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recuperação Audio 1": {
+      "main": [
+        [
+          {
+            "node": "Rec1. Restore After Audio1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recuperação Audio 2": {
+      "main": [
+        [
+          {
+            "node": "Rec2. Restore After Audio2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Escolher Mensagem": {
+      "main": [
+        [
+          {
+            "node": "4. Enviar Cutucada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Enviar Cutucada": {
+      "main": [
+        [
+          {
+            "node": "4b. Restore After Cutucada Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4b. Restore After Cutucada Send": {
+      "main": [
+        [
+          {
+            "node": "5. Incrementar Contador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rec1. Restore After Audio1": {
+      "main": [
+        [
+          {
+            "node": "Recuperação Audio 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rec2. Restore After Audio2": {
+      "main": [
+        [
+          {
+            "node": "Mover para Etapa 8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2a. Lock Lead": {
+      "main": [
+        [
+          {
+            "node": "2a2. Lock OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2a2. Lock OK?": {
+      "main": [
+        [
+          {
+            "node": "2a3. Restore After Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2a3. Restore After Lock": {
+      "main": [
+        [
+          {
+            "node": "2b. Decidir Ação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mover para Etapa 8": {
+      "main": [
+        [
+          {
+            "node": "6. Release Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Processar Webhook": {
+      "main": [
+        [
+          {
+            "node": "1b. Erro de Validação?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Pagamento Aprovado?": {
+      "main": [
+        [
+          {
+            "node": "3. Atualizar Lead PAGO",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "7. Atualizar Status Pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Atualizar Lead PAGO": {
+      "main": [
+        [
+          {
+            "node": "4. Enviar Link VIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Enviar Link VIP": {
+      "main": [
+        [
+          {
+            "node": "5. Enviar Agradecimento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Enviar Agradecimento": {
+      "main": [
+        [
+          {
+            "node": "6. Response Sucesso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Atualizar Status Pendente": {
+      "main": [
+        [
+          {
+            "node": "8. Response Pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1b. Erro de Validação?": {
+      "main": [
+        [
+          {
+            "node": "1c. Response Erro",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2. Pagamento Aprovado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "0. Load Secrets": {
+      "main": [
+        [
+          {
+            "node": "1. Processar Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3aa. Debounce? (skip /start)": {
+      "main": [
+        [
+          {
+            "node": "3ab. Ensure Debounce Columns1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "4. Check Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3ad. Debounce Wait 30s": {
+      "main": [
+        [
+          {
+            "node": "3adA. Set Base chatKey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3ae. Buscar Lead (Debounce)": {
+      "main": [
+        [
+          {
+            "node": "3aeA. Set DB chatKey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3ag. Debounce OK?": {
+      "main": [
+        [
+          {
+            "node": "4. Check Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "3ah. Debounce Falho (Msg Descartada)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "27b. Espera Digitando Groq (5s)": {
+      "main": [
+        [
+          {
+            "node": "28. Enviar Resposta Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "27a. Enviar Ação Digitando Groq": {
+      "main": [
+        [
+          {
+            "node": "27b. Espera Digitando Groq (5s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "ETAPA 0",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 6",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 7",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ETAPA 8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3ac. Upsert + Mark Last Msg": {
+      "main": [
+        [
+          {
+            "node": "3acB. Sync Upsert + Base",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "3ab. Ensure Debounce Columns1": {
+      "main": [
+        [
+          {
+            "node": "3ad. Debounce Wait 30s",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "3ac. Upsert + Mark Last Msg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3adA. Set Base chatKey": {
+      "main": [
+        [
+          {
+            "node": "3aeB. Merge Base + DB (chatKey)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "3acB. Sync Upsert + Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3aeA. Set DB chatKey": {
+      "main": [
+        [
+          {
+            "node": "3aeB. Merge Base + DB (chatKey)",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "3aeB. Merge Base + DB (chatKey)": {
+      "main": [
+        [
+          {
+            "node": "3aeC. Compactar (1 item)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3af. Gate Debounce (merge)": {
+      "main": [
+        [
+          {
+            "node": "3ag. Debounce OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3aeC. Compactar (1 item)": {
+      "main": [
+        [
+          {
+            "node": "3af. Gate Debounce (merge)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3acB. Sync Upsert + Base": {
+      "main": [
+        [
+          {
+            "node": "3ae. Buscar Lead (Debounce)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12a. Build SeqKey": {
+      "main": [
+        [
+          {
+            "node": "12aB. Needs Claim?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12aB. Needs Claim?": {
+      "main": [
+        [
+          {
+            "node": "12b. Claim SeqKey",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "12bM. Append Base + Claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "13. Proteger Sequência?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12b. Claim SeqKey": {
+      "main": [
+        [
+          {
+            "node": "12bM. Append Base + Claim",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "12bM. Append Base + Claim": {
+      "main": [
+        [
+          {
+            "node": "12bC. Compact Claim (1 item)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12bC. Compact Claim (1 item)": {
+      "main": [
+        [
+          {
+            "node": "12c. Claim OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12c. Claim OK?": {
+      "main": [
+        [
+          {
+            "node": "13. Proteger Sequência?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "25b. Gate Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20A. Syncpay OK?": {
+      "main": [
+        [
+          {
+            "node": "21. Extrair PIX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "20B. Debug Syncpay Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20B. Debug Syncpay Error": {
+      "main": [
+        [
+          {
+            "node": "TESTE DEBUG PIX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Token": {
+      "main": [
+        [
+          {
+            "node": "20. Gerar PIX Syncpay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19A. Gate PIX (Idempotência)": {
+      "main": [
+        [
+          {
+            "node": "19B. PIX: Gerar novo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19B. PIX: Gerar novo?": {
+      "main": [
+        [
+          {
+            "node": "Auth Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "19C. PIX: Reusar existente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19C. PIX: Reusar existente?": {
+      "main": [
+        [
+          {
+            "node": "19D. Preparar PIX Existente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "30. Salvar e Liberar Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19D. Preparar PIX Existente": {
+      "main": [
+        [
+          {
+            "node": "22. Enviar PIX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [],
+        [
+          {
+            "node": "27a. Enviar Ação Digitando Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Notificar Erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "28c. Último chunk?": {
+      "main": [
+        [
+          {
+            "node": "29. Verificar Progressão",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "1a1e8cc3-4969-4659-bc5a-9a8069f044c3",
+  "meta": {
+    "instanceId": "7429dba89d232ed77a5c2a6ea5cee03c04d59959512dec31f5835a961d5140f0"
+  },
+  "id": "I9W_DpXtY2aLY6pf8dotM",
+  "tags": []
+}
